@@ -1,15 +1,40 @@
 # CTI Self-Hosted
 
-CTI Self-Hosted collects reviewed cybersecurity feeds, validates article URLs and content, stores normalized records in PostgreSQL, and optionally uses Gemini for bounded article analysis and weekly reporting. The dashboard, database, and n8n workflows remain on infrastructure controlled by the operator.
+CTI Self-Hosted collects reviewed cybersecurity feeds, validates article URLs and content, stores normalized records in PostgreSQL, and optionally uses an operator-selected AI API for bounded article analysis and weekly reporting. The dashboard, database, and n8n workflows remain on infrastructure controlled by the operator.
 
 ## Requirements
 
 - Docker Engine with Docker Compose v2
-- an existing n8n installation
-- a Gemini API credential for AI analysis (optional workflows can remain disabled)
+- an AI API credential only when AI analysis/reporting will be enabled
 - a Telegram bot only if Telegram delivery/query workflows will be used
 
-## 1. Configure and start the database/dashboard
+The guided setup can deploy a local n8n container automatically. An existing n8n 2.x installation is also supported. The bundled workflow exports currently contain a Gemini model node, but the prompt and validated JSON contract are provider-independent; operators may replace that node with another AI provider.
+
+## Guided installation from a release
+
+Download and extract the release ZIP. Do not run the installer from inside the ZIP archive.
+
+On Windows, start `setup.cmd`. On Linux or macOS, run:
+
+```sh
+chmod +x setup.sh scripts/*.sh
+./setup.sh
+```
+
+The guided installer:
+
+1. checks Docker and Docker Compose before changing anything;
+2. explains where to install a missing prerequisite and stops safely;
+3. generates separate local database, dashboard, and n8n secrets;
+4. starts PostgreSQL, the dashboard, and an optional managed n8n container;
+5. waits for service health checks;
+6. imports all CTI workflows in a disabled state and avoids duplicate imports.
+
+The user still creates the first local n8n owner account and maps operator-owned PostgreSQL, AI, and optional Telegram credentials. Workflows are never activated automatically.
+
+Published GitHub releases contain a versioned ZIP, SHA-256 checksum, and JSON manifest. The release pipeline is triggered only by a matching version tag, validates the package, and builds the downloadable archive automatically.
+
+## Manual installation or existing n8n
 
 Clone the repository, copy `.env.example` to `.env`, and replace all three password placeholders with different random values:
 
@@ -28,7 +53,7 @@ sh ./scripts/install.sh
 
 Open `http://127.0.0.1:8080`. The dashboard intentionally listens only on localhost.
 
-## 2. Connect n8n
+### Connect n8n
 
 Attach the n8n container to the CTI network, or declare the network as external in the n8n Compose file:
 
@@ -54,7 +79,7 @@ Create an n8n PostgreSQL credential with:
 - Port: `5432`
 - SSL: disabled for the private Docker network
 
-Import the files in `workflows/`, assign the PostgreSQL credential to database nodes, and assign Gemini/Telegram credentials only to the workflows that use them. Imported workflows are disabled by default.
+Import the files in `workflows/`, assign the PostgreSQL credential to database nodes, and assign AI/Telegram credentials only to workflows that use them. Imported workflows are disabled by default.
 
 The exports have been import-tested with n8n `2.30.5`. Set `N8N_CONTAINER` in `.env`, then follow [N8N-SETUP.md](N8N-SETUP.md) for the guarded one-time import and credential mapping. Importing through the n8n UI is also supported.
 
@@ -67,7 +92,7 @@ Recommended activation order:
 5. CTI Weekly Report
 6. optional Telegram query/delivery and error alert workflows
 
-## 3. Verify
+### Verify
 
 ```sh
 docker compose exec -T cti-db \
@@ -76,7 +101,7 @@ docker compose exec -T cti-db \
 curl --fail http://127.0.0.1:8080/health/ready
 ```
 
-The schema version must be `22` or newer for this release candidate. Database upgrades will be shipped as versioned migrations rather than by recreating the volume.
+The schema version must be `25` or newer for this release candidate. Database upgrades are shipped as versioned migrations rather than by recreating the volume.
 
 ## Data and AI behavior
 
@@ -85,6 +110,19 @@ The schema version must be `22` or newer for this release candidate. Database up
 - Telegram searches and dashboard filtering do not call AI.
 - KEV/EPSS enrichment uses public vulnerability data and does not call AI.
 - PostgreSQL data remains in the `cti_pgdata` Docker volume.
+
+## Included sources
+
+Six reviewed sources are enabled by default:
+
+- The Hacker News
+- CISA Cybersecurity Advisories
+- Microsoft Security Blog
+- BleepingComputer
+- Cisco Talos
+- Krebs on Security
+
+Dark Reading and SecurityWeek definitions are included but disabled because their RSS feeds work while automated article retrieval currently returns HTTP 403. Keeping them disabled prevents permanent failures in the analysis queue. They can be enabled after a compatible, policy-respecting content adapter is configured.
 
 ## Backup and restore
 
@@ -114,4 +152,4 @@ Copyright © 2026 Emeç Yıldız.
 
 The original code, workflows, configuration, and documentation in this repository are licensed under the [GNU Affero General Public License v3.0 only](LICENSE). If you modify the software and make that modified version available to users over a network, you must offer those users the corresponding source code as required by the license.
 
-CTI Self-Hosted may communicate with separately installed software and third-party services such as n8n, PostgreSQL, Gemini, Telegram, and external intelligence feeds. Those components, services, and their data remain subject to their own licenses and terms; they are not relicensed by this repository.
+CTI Self-Hosted may communicate with separately installed software and third-party services such as n8n, PostgreSQL, AI providers, Telegram, and external intelligence feeds. Those components, services, and their data remain subject to their own licenses and terms; they are not relicensed by this repository.

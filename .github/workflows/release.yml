@@ -1,0 +1,48 @@
+name: Build release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag and package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_tag="v$(tr -d '\r\n' < VERSION)"
+          test "$GITHUB_REF_NAME" = "$expected_tag"
+
+      - name: Validate configuration and scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --env-file .env.example --profile managed-n8n config --quiet
+          for script in setup.sh scripts/*.sh; do sh -n "$script"; done
+          for workflow in workflows/*.json; do jq empty "$workflow"; done
+          dotnet build app/cti-dashboard/CtiDashboard.csproj --configuration Release
+
+      - name: Build checksummed release archive
+        shell: bash
+        run: sh ./scripts/build-release.sh dist
+
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --prerelease \
+            --title "CTI Self-Hosted $GITHUB_REF_NAME" \
+            --notes-file RELEASE-NOTES.md

@@ -27,14 +27,16 @@ Create one PostgreSQL credential in n8n and assign it to every PostgreSQL node:
 
 This role is not the database owner and cannot read internal event-clustering tables directly.
 
-## Gemini credential
+## AI credential and provider adapter
 
-Assign an operator-owned Google Gemini credential only to:
+AI access is optional. The bundled workflow exports currently use a Google Gemini model node in:
 
 - `CTI Article Analysis` → `Analyze With Gemini`
 - `CTI Weekly Report` → its Gemini model node
 
-Feed collection, dashboard filtering, Telegram queries, retention, KEV synchronization, and EPSS enrichment do not require Gemini.
+An operator can replace those model nodes with another AI provider while preserving the prepared prompt and the validated JSON response contract used by the following nodes. Provider credentials must remain operator-owned and must never be committed to the repository.
+
+Feed collection, dashboard filtering, Telegram queries, retention, KEV synchronization, and EPSS enrichment do not require an AI API.
 
 ## Telegram credential (optional)
 
@@ -58,5 +60,4 @@ Activate one workflow at a time and inspect its first execution:
 6. optional Telegram workflows
 7. optional n8n error alerts
 
-After Source Collection runs, verify the dashboard and confirm that all five sources have a recent successful check. Article Analysis should be activated only after the PostgreSQL and Gemini nodes both show valid credentials.
-
+After Source Collection runs, verify the dashboard and confirm that all six enabled sources have a recent successful check. Article Analysis should be activated only after the PostgreSQL and selected AI-provider nodes both show valid credentials.

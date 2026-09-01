@@ -2,8 +2,8 @@
 
 DO $$
 BEGIN
-    IF COALESCE((SELECT max(version) FROM cti.schema_versions), 0) < 22 THEN
-        RAISE EXCEPTION 'CTI schema version 22 is not installed.';
+    IF COALESCE((SELECT max(version) FROM cti.schema_versions), 0) < 25 THEN
+        RAISE EXCEPTION 'CTI schema version 25 is not installed.';
     END IF;
 
     IF has_table_privilege('cti_n8n', 'cti.articles', 'DELETE') THEN
@@ -87,6 +87,35 @@ BEGIN
           AND trust_score = 92
     ) THEN
         RAISE EXCEPTION 'The Cisco Talos CTI source is missing or invalid.';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM cti.sources
+        WHERE name = 'Krebs on Security'
+          AND enabled = true
+          AND feed_url = 'https://krebsonsecurity.com/feed/'
+          AND allowed_hosts = ARRAY['krebsonsecurity.com', 'www.krebsonsecurity.com']
+          AND content_selector = '.entry-content'
+          AND trust_score = 90
+    ) THEN
+        RAISE EXCEPTION 'The Krebs on Security CTI source is missing or invalid.';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM cti.sources
+        WHERE name = 'Dark Reading'
+          AND enabled = false
+          AND feed_url = 'https://www.darkreading.com/feeds/rss.xml'
+    ) OR NOT EXISTS (
+        SELECT 1
+        FROM cti.sources
+        WHERE name = 'SecurityWeek'
+          AND enabled = false
+          AND feed_url = 'https://www.securityweek.com/feed/'
+    ) THEN
+        RAISE EXCEPTION 'A reviewed but compatibility-disabled CTI source is missing.';
     END IF;
 
     IF NOT has_function_privilege(

@@ -6,7 +6,13 @@ package_dir=$(dirname "$script_dir")
 cd "$package_dir"
 
 sh ./scripts/preflight.sh
-docker compose up -d --build
+managed_n8n=$(sed -n 's/^CTI_MANAGED_N8N=//p' .env | head -n 1)
+if [ "$managed_n8n" = "true" ]; then
+    docker compose --profile managed-n8n up -d --build
+else
+    docker compose up -d --build
+fi
+sh ./scripts/migrate.sh
 
 dashboard_bind=$(sed -n 's/^CTI_DASHBOARD_BIND=//p' .env | head -n 1)
 dashboard_port=$(sed -n 's/^CTI_DASHBOARD_PORT=//p' .env | head -n 1)
@@ -38,4 +44,8 @@ enabled_sources=$(docker compose exec -T cti-db \
 printf 'CTI Self-Hosted is ready. Schema: %s, enabled sources: %s.\n' \
     "$schema_version" "$enabled_sources"
 printf 'Dashboard: http://127.0.0.1:%s\n' "$dashboard_port"
-printf 'Next: connect n8n to the CTI Docker network and import workflows/.\n'
+if [ "$managed_n8n" = "true" ]; then
+    printf 'n8n: http://127.0.0.1:%s\n' "$(sed -n 's/^N8N_PORT=//p' .env | head -n 1)"
+else
+    printf 'Next: connect n8n to the CTI Docker network and import workflows/.\n'
+fi

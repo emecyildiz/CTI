@@ -1,4 +1,4 @@
-name: cti-self-hosted
+name: ${CTI_COMPOSE_PROJECT_NAME:-cti-self-hosted}
 
 services:
   cti-db:
@@ -13,6 +13,7 @@ services:
       - cti_pgdata:/var/lib/postgresql/data
       - ./app/cti/init-database.sh:/docker-entrypoint-initdb.d/010-init-database.sh:ro
       - ./app/cti/schema.sql:/opt/cti/schema.sql:ro
+      - ./app/cti/migrations:/opt/cti/migrations:ro
     restart: unless-stopped
     stop_grace_period: 60s
     healthcheck:
@@ -75,8 +76,45 @@ services:
     networks:
       - cti
 
+  cti-n8n:
+    image: docker.n8n.io/n8nio/n8n:2.30.5@sha256:450853cd21a2ce36587c4c860eb26927c1ceba9496bf55f4c213b5d3a6dc8c6f
+    container_name: ${N8N_CONTAINER:-cti-n8n}
+    profiles:
+      - managed-n8n
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      N8N_LISTEN_ADDRESS: 0.0.0.0
+      N8N_SECURE_COOKIE: "false"
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      GENERIC_TIMEZONE: ${N8N_TIMEZONE:-UTC}
+      TZ: ${N8N_TIMEZONE:-UTC}
+    ports:
+      - "127.0.0.1:${N8N_PORT:-5678}:5678"
+    volumes:
+      - cti_n8n_data:/home/node/.n8n
+    restart: unless-stopped
+    pids_limit: 256
+    mem_limit: 768m
+    cpus: 1.00
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - cti
+
 volumes:
   cti_pgdata:
+  cti_n8n_data:
 
 networks:
   cti:

@@ -3,6 +3,7 @@
 !.env.example
 
 backups/
+dist/
 *.dump
 *.dump.sha256
 
