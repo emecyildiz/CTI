@@ -52,6 +52,7 @@ sh ./scripts/install.sh
 ```
 
 Open `http://127.0.0.1:8080`. The dashboard intentionally listens only on localhost.
+The protected `/setup` page currently provides a read-only installation and source-health check. It does not save credentials, modify workflows, or activate automation.
 
 ### Connect n8n
 
@@ -101,7 +102,7 @@ docker compose exec -T cti-db \
 curl --fail http://127.0.0.1:8080/health/ready
 ```
 
-The schema version must be `25` or newer for this release candidate. Database upgrades are shipped as versioned migrations rather than by recreating the volume.
+The schema version must be `26` or newer on the current main branch. Database upgrades are shipped as versioned migrations rather than by recreating the volume.
 
 ## Data and AI behavior
 

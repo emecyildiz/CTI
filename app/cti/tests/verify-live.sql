@@ -2,8 +2,8 @@
 
 DO $$
 BEGIN
-    IF COALESCE((SELECT max(version) FROM cti.schema_versions), 0) < 25 THEN
-        RAISE EXCEPTION 'CTI schema version 25 is not installed.';
+    IF COALESCE((SELECT max(version) FROM cti.schema_versions), 0) < 26 THEN
+        RAISE EXCEPTION 'CTI schema version 26 is not installed.';
     END IF;
 
     IF has_table_privilege('cti_n8n', 'cti.articles', 'DELETE') THEN
@@ -175,7 +175,8 @@ BEGIN
 
     IF NOT has_table_privilege('cti_dashboard', 'cti.dashboard_articles', 'SELECT') OR
        NOT has_table_privilege('cti_dashboard', 'cti.dashboard_reports', 'SELECT') OR
-       NOT has_table_privilege('cti_dashboard', 'cti.dashboard_ai_usage', 'SELECT') THEN
+       NOT has_table_privilege('cti_dashboard', 'cti.dashboard_ai_usage', 'SELECT') OR
+       NOT has_table_privilege('cti_dashboard', 'cti.dashboard_system_status', 'SELECT') THEN
         RAISE EXCEPTION 'The dashboard role cannot read its restricted views.';
     END IF;
 

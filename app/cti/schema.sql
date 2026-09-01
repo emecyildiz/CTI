@@ -2606,6 +2606,28 @@ FROM boundaries
 LEFT JOIN cti.ai_usage AS usage
     ON usage.requested_at >= boundaries.utc_month_start;
 
+CREATE OR REPLACE VIEW cti.dashboard_system_status
+WITH (security_barrier = true)
+AS
+SELECT
+    COALESCE((SELECT max(version) FROM cti.schema_versions), 0)::integer AS schema_version,
+    count(*) FILTER (WHERE source.enabled)::bigint AS enabled_source_count,
+    count(*)::bigint AS total_source_count,
+    count(*) FILTER (
+        WHERE source.enabled
+          AND source.last_success_at IS NOT NULL
+    )::bigint AS checked_source_count,
+    count(*) FILTER (
+        WHERE source.enabled
+          AND source.last_error_at IS NOT NULL
+          AND (
+              source.last_success_at IS NULL
+              OR source.last_error_at > source.last_success_at
+          )
+    )::bigint AS failing_source_count,
+    max(source.last_success_at) FILTER (WHERE source.enabled) AS last_source_success_at
+FROM cti.sources AS source;
+
 REVOKE ALL ON ALL TABLES IN SCHEMA cti FROM cti_dashboard;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA cti FROM cti_dashboard;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA cti FROM cti_dashboard;
@@ -2613,7 +2635,8 @@ REVOKE TEMPORARY ON DATABASE cti FROM cti_dashboard;
 
 GRANT CONNECT ON DATABASE cti TO cti_dashboard;
 GRANT USAGE ON SCHEMA cti TO cti_dashboard;
-GRANT SELECT ON cti.dashboard_articles, cti.dashboard_reports, cti.dashboard_ai_usage TO cti_dashboard;
+GRANT SELECT ON cti.dashboard_articles, cti.dashboard_reports,
+    cti.dashboard_ai_usage, cti.dashboard_system_status TO cti_dashboard;
 
 INSERT INTO cti.schema_versions (version)
 VALUES (1)
@@ -2900,4 +2923,8 @@ SET feed_url = EXCLUDED.feed_url,
 
 INSERT INTO cti.schema_versions (version)
 VALUES (25)
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO cti.schema_versions (version)
+VALUES (26)
 ON CONFLICT (version) DO NOTHING;

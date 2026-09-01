@@ -86,6 +86,36 @@ app.MapGet("/health/ready", async (NpgsqlDataSource dataSource, CancellationToke
     return Results.Text("ready", "text/plain; charset=utf-8");
 });
 
+app.MapGet("/setup", async (
+    HttpContext context,
+    NpgsqlDataSource dataSource,
+    CancellationToken cancellationToken) =>
+{
+    await using var command = dataSource.CreateCommand("""
+        SELECT schema_version, enabled_source_count, total_source_count,
+               checked_source_count, failing_source_count, last_source_success_at
+        FROM cti.dashboard_system_status;
+        """);
+    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+    if (!await reader.ReadAsync(cancellationToken))
+    {
+        throw new InvalidOperationException("The CTI system status is unavailable.");
+    }
+
+    var status = new SetupSystemStatus(
+        reader.GetInt32(0),
+        reader.GetInt64(1),
+        reader.GetInt64(2),
+        reader.GetInt64(3),
+        reader.GetInt64(4),
+        reader.IsDBNull(5) ? null : reader.GetDateTime(5),
+        authenticationMode);
+
+    return Results.Content(
+        HtmlPages.Setup(status, GetAuthenticatedIdentity(context)),
+        "text/html; charset=utf-8");
+});
+
 app.MapGet("/", async (
     HttpContext context,
     NpgsqlDataSource dataSource,
@@ -316,6 +346,11 @@ internal sealed record ReportItem(
     long Id, string Title, string Content, string Status, DateTime WindowStart,
     DateTime WindowEnd, DateTime GeneratedAt, DateTime? SentAt);
 
+internal sealed record SetupSystemStatus(
+    int SchemaVersion, long EnabledSourceCount, long TotalSourceCount,
+    long CheckedSourceCount, long FailingSourceCount,
+    DateTime? LastSourceSuccessAt, string AuthenticationMode);
+
 internal static class HtmlPages
 {
     private static string E(string? value) => System.Net.WebUtility.HtmlEncode(value ?? string.Empty);
@@ -383,6 +418,45 @@ internal static class HtmlPages
         return Layout("Weekly reports", email, $$"""
             <section class="hero"><p class="eyebrow">PRIVATE REPORT ARCHIVE</p><h1>Weekly assessments</h1><p>Generated reports are retained for eight weeks.</p></section>
             <section class="reports">{{body}}</section>
+            """);
+    }
+
+    internal static string Setup(SetupSystemStatus status, string email)
+    {
+        var sourceHealthClass = status.FailingSourceCount > 0 ? "warning" : "ready";
+        var sourceHealthLabel = status.FailingSourceCount > 0
+            ? $"{status.FailingSourceCount} source needs attention"
+            : status.CheckedSourceCount == 0
+                ? "Waiting for the first collection"
+                : "No current source failures";
+        var lastCollection = status.LastSourceSuccessAt is null
+            ? "Not recorded yet"
+            : D(status.LastSourceSuccessAt.Value);
+        var accessLabel = status.AuthenticationMode == "cloudflare"
+            ? "Cloudflare Access"
+            : "Local/private binding";
+
+        return Layout("Guided setup", email, $$"""
+            <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
+            <aside class="setup-notice"><strong>Read-only preview</strong><span>This package does not save settings, credentials, or workflow changes.</span></aside>
+            <ol class="setup-steps" aria-label="Setup progress">
+              <li class="active"><span>01</span><strong>System check</strong><small>Available now</small></li>
+              <li><span>02</span><strong>AI provider</strong><small>Next package</small></li>
+              <li><span>03</span><strong>Telegram &amp; sources</strong><small>Planned</small></li>
+              <li><span>04</span><strong>Review &amp; activate</strong><small>Planned</small></li>
+            </ol>
+            <section class="setup-panel">
+              <div class="setup-heading"><div><p class="eyebrow">STEP 01</p><h2>System check</h2></div><span class="check-state ready">Ready</span></div>
+              <div class="system-grid">
+                <article><span>Dashboard</span><strong>Online</strong><small>The private interface is responding.</small></article>
+                <article><span>Database schema</span><strong>Version {{status.SchemaVersion}}</strong><small>The restricted status view is available.</small></article>
+                <article><span>Reviewed sources</span><strong>{{status.EnabledSourceCount}} enabled / {{status.TotalSourceCount}} defined</strong><small>{{status.CheckedSourceCount}} enabled sources have completed a successful check.</small></article>
+                <article><span>Source health</span><strong class="{{sourceHealthClass}}">{{E(sourceHealthLabel)}}</strong><small>Last successful collection: {{E(lastCollection)}}</small></article>
+                <article><span>Access boundary</span><strong>{{E(accessLabel)}}</strong><small>The setup route uses the same protection as the dashboard.</small></article>
+                <article><span>Configuration writes</span><strong>Disabled</strong><small>No secrets or workflow state can be changed in this package.</small></article>
+              </div>
+              <div class="setup-next"><div><strong>Next: AI provider</strong><p>A provider-neutral configuration model and protected credential handoff will be added as a separate package.</p></div><button type="button" disabled aria-disabled="true">Continue in next package</button></div>
+            </section>
             """);
     }
 
@@ -455,8 +529,8 @@ internal static class HtmlPages
     }
 
     private static string Layout(string title, string email, string content) => $$"""
-        <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow,noarchive"><meta name="theme-color" content="#18211d"><title>{{E(title)}} — CTI Self-Hosted</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/reports.css"></head>
-        <body><header><a class="brand" href="/"><b>CTI Self-Hosted</b><span>CTI OPERATIONS</span></a><nav><a href="/">Articles</a><a href="/reports">Reports</a></nav><span class="identity">{{E(email)}}</span></header><main>{{content}}</main><footer>Content remains untrusted until independently verified · <a href="https://github.com/emecyildiz/CTI" target="_blank" rel="noopener noreferrer">Source (AGPL-3.0)</a> · No warranty</footer></body></html>
+        <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow,noarchive"><meta name="theme-color" content="#18211d"><title>{{E(title)}} — CTI Self-Hosted</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/reports.css"><link rel="stylesheet" href="/setup.css"></head>
+        <body><header><a class="brand" href="/"><b>CTI Self-Hosted</b><span>CTI OPERATIONS</span></a><nav><a href="/">Articles</a><a href="/reports">Reports</a><a href="/setup">Setup</a></nav><span class="identity">{{E(email)}}</span></header><main>{{content}}</main><footer>Content remains untrusted until independently verified · <a href="https://github.com/emecyildiz/CTI" target="_blank" rel="noopener noreferrer">Source (AGPL-3.0)</a> · No warranty</footer></body></html>
         """;
 
     private static string EnrichmentBadges(
