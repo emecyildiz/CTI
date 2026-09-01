@@ -1,0 +1,367 @@
+{
+  "name": "CTI Source Collection",
+  "description": "Collects recent metadata from reviewed CTI RSS sources without using AI or Telegram.",
+  "active": false,
+  "nodes": [
+    {
+      "id": "b96e3636-85e1-42fd-af57-c1be31dc02e1",
+      "name": "Every Six Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        100
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "615c21ce-2f82-4393-8c26-50e2d7c1690c",
+      "name": "Manual Test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "cfbc1b92-a307-44ba-babd-823c9a2b45f5",
+      "name": "Load Active Sources",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        260,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id AS source_id, name AS source_name, feed_url, allowed_hosts FROM cti.sources WHERE enabled = true ORDER BY trust_score DESC, id;",
+        "options": {}
+      }
+    },
+    {
+      "id": "3a99670c-57cf-4c9a-b8bd-69bec3f909dc",
+      "name": "Start Source Check",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        500,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT source.id AS source_id, source.name AS source_name, source.feed_url, source.allowed_hosts FROM cti.sources AS source WHERE source.id = $1 AND source.enabled = true;",
+        "options": {
+          "queryReplacement": "={{ [$json.source_id] }}"
+        }
+      }
+    },
+    {
+      "id": "557623be-a586-419f-8cf0-50c862c90a02",
+      "name": "Read Reviewed Feeds",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.2,
+      "position": [
+        740,
+        200
+      ],
+      "parameters": {
+        "url": "={{ $json.feed_url }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "4f9aeb73-dd3c-48e6-80dc-b8189d4c2ab9",
+      "name": "Validate Feed Item",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const source = $('Load Active Sources').item.json;\nconst title = String($json.title ?? '').trim();\nconst rawUrl = String($json.link ?? '').trim();\nconst rawDate = $json.isoDate ?? $json.pubDate ?? $json.published ?? $json.date;\n\nconst reject = (reason, hostname = '') => ({\n  json: {\n    item_valid: false,\n    source_id: Number(source.source_id),\n    source_name: String(source.source_name),\n    rejection_reason: reason,\n    rejected_hostname: String(hostname).slice(0, 253),\n    rejected_url: rawUrl.slice(0, 4000),\n  },\n});\n\nif (!title || title.length > 500) {\n  return reject('invalid_title');\n}\n\nconst publishedAt = new Date(rawDate);\nif (!rawDate || Number.isNaN(publishedAt.getTime())) {\n  return reject('invalid_publication_date');\n}\n\nif (!rawUrl || rawUrl.length > 4000) {\n  return reject('invalid_article_url');\n}\n\nconst urlMatch = rawUrl.match(/^https:\\/\\/([^\\/?#:@]+)(?::(\\d+))?(?:[\\/?#]|$)/i);\nif (!urlMatch) {\n  return reject('invalid_article_url');\n}\n\nconst hostname = urlMatch[1].toLowerCase();\nconst port = urlMatch[2] ?? '';\nconst allowedHosts = Array.isArray(source.allowed_hosts)\n  ? source.allowed_hosts.map((host) => String(host).toLowerCase())\n  : [];\n\nif ((port && port !== '443') || !allowedHosts.includes(hostname)) {\n  return reject('article_host_not_allowed', hostname);\n}\n\nconst withoutFragment = rawUrl.split('#', 1)[0];\nconst questionMarkIndex = withoutFragment.indexOf('?');\nlet canonicalUrl = withoutFragment;\nif (questionMarkIndex >= 0) {\n  const baseUrl = withoutFragment.slice(0, questionMarkIndex);\n  const trackingKeys = new Set(['fbclid', 'gclid', 'dclid', 'mc_cid', 'mc_eid']);\n  const retainedParameters = withoutFragment\n    .slice(questionMarkIndex + 1)\n    .split('&')\n    .filter(Boolean)\n    .filter((parameter) => {\n      const key = parameter.split('=', 1)[0].toLowerCase();\n      return !key.startsWith('utm_') && !trackingKeys.has(key);\n    })\n    .sort();\n  canonicalUrl = retainedParameters.length > 0\n    ? `${baseUrl}?${retainedParameters.join('&')}`\n    : baseUrl;\n}\n\nconst feedGuid = String($json.guid ?? $json.id ?? canonicalUrl).trim();\nif (feedGuid.length > 1000) {\n  return reject('feed_guid_too_long', hostname);\n}\n\nreturn {\n  json: {\n    item_valid: true,\n    source_id: Number(source.source_id),\n    source_name: String(source.source_name),\n    original_url: canonicalUrl,\n    title,\n    feed_guid: feedGuid,\n    published_at: publishedAt.toISOString(),\n  },\n};"
+      }
+    },
+    {
+      "id": "32c8bb5e-d364-4abf-a862-59de938e98d7",
+      "name": "Unique Successful Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        20
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const seen = new Set();\nconst sources = [];\nfor (const item of $input.all()) {\n  const sourceId = Number(item.json.source_id);\n  if (!Number.isSafeInteger(sourceId) || sourceId <= 0 || seen.has(sourceId)) {\n    continue;\n  }\n  seen.add(sourceId);\n  sources.push({ json: { source_id: sourceId } });\n}\nreturn sources;"
+      }
+    },
+    {
+      "id": "f3781985-0667-4529-a937-f51821e0a701",
+      "name": "Feed Item Accepted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "ce5db4d2-c7c4-4f0c-bef4-9c90d67bb69a",
+              "leftValue": "={{ String($json.item_valid) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "34cf625a-3fc4-4d6c-8a38-e704b18f7771",
+      "name": "Store Recent Metadata",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1480,
+        100
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT article_id, is_new, occurrence_added FROM cti.ingest_feed_item($1, $2, $3, $4, $5::timestamptz);",
+        "options": {
+          "queryReplacement": "={{ [$json.source_id, $json.original_url, $json.title, $json.feed_guid, $json.published_at] }}"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "bb987e69-908f-4382-8a47-438f6bea8080",
+      "name": "Record Source Success",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1480,
+        20
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT cti.record_source_check($1, true, NULL);",
+        "options": {
+          "queryReplacement": "={{ [$json.source_id] }}"
+        }
+      }
+    },
+    {
+      "id": "ba0185b8-2897-4eb4-b87d-70883de93694",
+      "name": "Record Rejected Feed Item",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1480,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO cti.workflow_log (workflow_name, level, event_code, details) VALUES ('CTI Source Collection', 'warning', 'feed_item_rejected', jsonb_build_object('source_id', $1::bigint, 'source_name', left($2::text, 200), 'reason', left($3::text, 100), 'hostname', nullif(left($4::text, 253), ''), 'url', left($5::text, 1000))) RETURNING id AS workflow_log_id;",
+        "options": {
+          "queryReplacement": "={{ [$json.source_id, $json.source_name, $json.rejection_reason, $json.rejected_hostname, $json.rejected_url] }}"
+        }
+      }
+    },
+    {
+      "id": "cc604183-f40a-4d25-9858-e9d736205c51",
+      "name": "Record Source Read Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1000,
+        420
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH checked AS MATERIALIZED (SELECT cti.record_source_check($1, false, 'feed_read_failed')), logged AS (INSERT INTO cti.workflow_log (workflow_name, level, event_code, details) SELECT 'CTI Source Collection', 'error', 'feed_read_failed', jsonb_build_object('source_id', $1::bigint, 'source_name', left($2::text, 200)) FROM checked RETURNING id) SELECT id AS workflow_log_id FROM logged;",
+        "options": {
+          "queryReplacement": "={{ [$('Load Active Sources').item.json.source_id, $('Load Active Sources').item.json.source_name] }}"
+        }
+      }
+    },
+    {
+      "id": "f577bb66-0c66-4d0c-bc5b-2cb1fa4f537b",
+      "name": "Record Source Store Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1720,
+        180
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH checked AS MATERIALIZED (SELECT cti.record_source_check($1, false, 'feed_item_store_failed')), logged AS (INSERT INTO cti.workflow_log (workflow_name, level, event_code, details) SELECT 'CTI Source Collection', 'error', 'feed_item_store_failed', jsonb_build_object('source_id', $1::bigint, 'source_name', left($2::text, 200)) FROM checked RETURNING id) SELECT id AS workflow_log_id FROM logged;",
+        "options": {
+          "queryReplacement": "={{ [$('Load Active Sources').item.json.source_id, $('Load Active Sources').item.json.source_name] }}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every Six Hours": {
+      "main": [
+        [
+          {
+            "node": "Load Active Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Test": {
+      "main": [
+        [
+          {
+            "node": "Load Active Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Active Sources": {
+      "main": [
+        [
+          {
+            "node": "Start Source Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Source Check": {
+      "main": [
+        [
+          {
+            "node": "Read Reviewed Feeds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Reviewed Feeds": {
+      "main": [
+        [
+          {
+            "node": "Validate Feed Item",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Source Read Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Feed Item": {
+      "main": [
+        [
+          {
+            "node": "Feed Item Accepted?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Unique Successful Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unique Successful Sources": {
+      "main": [
+        [
+          {
+            "node": "Record Source Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Feed Item Accepted?": {
+      "main": [
+        [
+          {
+            "node": "Store Recent Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Rejected Feed Item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Recent Metadata": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Record Source Store Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "errorWorkflow": "ojyQAZWnKBIKpigj",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "tags": []
+}

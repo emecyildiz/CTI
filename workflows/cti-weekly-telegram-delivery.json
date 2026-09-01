@@ -1,0 +1,332 @@
+{
+  "name": "CTI Weekly Telegram Delivery",
+  "description": "Delivers each ready weekly CTI report to the private Telegram chat once, using database-backed delivery reservations.",
+  "active": false,
+  "nodes": [
+    {
+      "id": "90c5dd49-b88e-49de-a0cd-3302c93dc0b1",
+      "name": "Manual Test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        280
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "99d3af24-1d3d-4a28-a8ba-f6bc0395a9af",
+      "name": "Every Thirty Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        80
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "64604912-1436-44dc-bd41-c54e3c8db4d3",
+      "name": "Claim Weekly Telegram Delivery",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        300,
+        180
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT delivery_id, report_id, report_title, report_content FROM cti.claim_weekly_telegram_delivery();",
+        "options": {}
+      }
+    },
+    {
+      "id": "1c128ad6-e61b-45c3-98ac-ea54fd8ae936",
+      "name": "Prepare Safe Telegram Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        180
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const deliveryId = Number($json.delivery_id);\nconst reportId = Number($json.report_id);\nconst rawTitle = String($json.report_title ?? '').replace(/[\\u0000-\\u001F\\u007F]/g, ' ').replace(/\\s+/g, ' ').trim();\nlet rawBody = String($json.report_content ?? '')\n  .replace(/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]/g, ' ')\n  .replace(/^#{1,6}\\s+/gm, '')\n  .replace(/<((?:https:\\/\\/)[^>]+)>/g, '$1')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\nif (!Number.isSafeInteger(deliveryId) || !Number.isSafeInteger(reportId) || rawTitle.length < 1 || rawTitle.length > 500 || rawBody.length < 1) {\n  throw new Error('Invalid weekly Telegram delivery payload.');\n}\nconst escapeHtml = (value) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst prefix = `🛡️ Weekly CTI Report\\n${escapeHtml(rawTitle)}\\n\\n`;\nconst suffix = '\\n\\nNote: The complete report is retained in the private CTI archive.';\nif (prefix.length + suffix.length > 3400) throw new Error('Telegram report title is too long.');\nlet shortened = false;\nlet escapedBody = escapeHtml(rawBody);\nwhile (prefix.length + escapedBody.length + suffix.length > 3900 && rawBody.length > 200) {\n  shortened = true;\n  rawBody = rawBody.slice(0, Math.max(200, Math.floor(rawBody.length * 0.88))).replace(/\\s+\\S*$/, '').trimEnd();\n  escapedBody = escapeHtml(rawBody);\n}\nif (shortened) escapedBody += '\\n… (summary shortened)';\nreturn { json: { delivery_id: deliveryId, report_id: reportId, message: prefix + escapedBody + suffix } };"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "06a4c41c-a571-45de-92d0-a20719389551",
+      "name": "Send Weekly Report to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        820,
+        80
+      ],
+      "parameters": {
+        "chatId": "6552428480",
+        "text": "={{ $json.message }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🦠 Malware",
+                    "additionalFields": {
+                      "callback_data": "cti:category:malware"
+                    }
+                  },
+                  {
+                    "text": "🧩 Vulnerabilities",
+                    "additionalFields": {
+                      "callback_data": "cti:category:vulnerability"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🔓 Data Breaches",
+                    "additionalFields": {
+                      "callback_data": "cti:category:data_breach"
+                    }
+                  },
+                  {
+                    "text": "🛰️ Threat Intel",
+                    "additionalFields": {
+                      "callback_data": "cti:category:threat_intelligence"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "📚 Other",
+                    "additionalFields": {
+                      "callback_data": "cti:category:other"
+                    }
+                  },
+                  {
+                    "text": "🏠 Menu",
+                    "additionalFields": {
+                      "callback_data": "cti:menu"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "eedda83f-ebd8-40cf-b634-2a57b4e75eb7",
+      "name": "Validate Telegram Receipt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        80
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const claim = $('Claim Weekly Telegram Delivery').item.json;\nconst messageId = Number($json?.result?.message_id ?? $json?.message_id);\nif (!Number.isSafeInteger(messageId) || messageId < 1) throw new Error('Telegram returned an invalid message receipt.');\nreturn { json: { delivery_id: Number(claim.delivery_id), external_message_id: String(messageId) } };"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "6d7640df-795a-4763-9c02-b5b13066c2cc",
+      "name": "Complete Telegram Delivery",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1340,
+        40
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT cti.complete_weekly_telegram_delivery($1, $2);",
+        "options": {
+          "queryReplacement": "={{ [$json.delivery_id, $json.external_message_id] }}"
+        }
+      }
+    },
+    {
+      "id": "b4450f65-49cc-472e-8dc4-8aee89eb9096",
+      "name": "Record Preparation Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        820,
+        320
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT cti.fail_weekly_telegram_delivery($1, $2, $3);",
+        "options": {
+          "queryReplacement": "={{ [$(\"Claim Weekly Telegram Delivery\").item.json.delivery_id, 'message_preparation_failed', true] }}"
+        }
+      }
+    },
+    {
+      "id": "0d819f51-24c8-475b-bdd6-44087dc23a6f",
+      "name": "Record Ambiguous Send Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1080,
+        280
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT cti.fail_weekly_telegram_delivery($1, $2, $3);",
+        "options": {
+          "queryReplacement": "={{ [$(\"Claim Weekly Telegram Delivery\").item.json.delivery_id, 'telegram_transport_failed', false] }}"
+        }
+      }
+    },
+    {
+      "id": "a4bb4b0a-acde-48a3-916b-cb51821bc58d",
+      "name": "Record Invalid Receipt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1340,
+        220
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT cti.fail_weekly_telegram_delivery($1, $2, $3);",
+        "options": {
+          "queryReplacement": "={{ [$(\"Claim Weekly Telegram Delivery\").item.json.delivery_id, 'telegram_receipt_invalid', false] }}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Test": {
+      "main": [
+        [
+          {
+            "node": "Claim Weekly Telegram Delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every Thirty Minutes": {
+      "main": [
+        [
+          {
+            "node": "Claim Weekly Telegram Delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Weekly Telegram Delivery": {
+      "main": [
+        [
+          {
+            "node": "Prepare Safe Telegram Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Safe Telegram Summary": {
+      "main": [
+        [
+          {
+            "node": "Send Weekly Report to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Preparation Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Weekly Report to Telegram": {
+      "main": [
+        [
+          {
+            "node": "Validate Telegram Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Ambiguous Send Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Telegram Receipt": {
+      "main": [
+        [
+          {
+            "node": "Complete Telegram Delivery",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Invalid Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "errorWorkflow": "ojyQAZWnKBIKpigj",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "tags": []
+}

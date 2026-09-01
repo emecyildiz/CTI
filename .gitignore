@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+
+backups/
+*.dump
+*.dump.sha256
+
+**/bin/
+**/obj/
+
+.DS_Store
+Thumbs.db

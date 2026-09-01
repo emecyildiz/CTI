@@ -1,0 +1,83 @@
+name: cti-self-hosted
+
+services:
+  cti-db:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cti}
+      POSTGRES_USER: ${POSTGRES_USER:-cti_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      CTI_APP_PASSWORD: ${CTI_APP_PASSWORD:?set CTI_APP_PASSWORD in .env}
+      CTI_DASHBOARD_PASSWORD: ${CTI_DASHBOARD_PASSWORD:?set CTI_DASHBOARD_PASSWORD in .env}
+    volumes:
+      - cti_pgdata:/var/lib/postgresql/data
+      - ./app/cti/init-database.sh:/docker-entrypoint-initdb.d/010-init-database.sh:ro
+      - ./app/cti/schema.sql:/opt/cti/schema.sql:ro
+    restart: unless-stopped
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      cti:
+        aliases:
+          - cti-db
+
+  cti-dashboard:
+    build:
+      context: ./app/cti-dashboard
+      dockerfile: Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "8080"
+      CTI_AUTH_MODE: local
+      CTI_APPLICATION_NAME: cti-self-hosted-dashboard
+      CTI_DASHBOARD_PASSWORD: ${CTI_DASHBOARD_PASSWORD:?set CTI_DASHBOARD_PASSWORD in .env}
+      CtiDatabase__Host: cti-db
+      CtiDatabase__Name: ${POSTGRES_DB:-cti}
+      CtiDatabase__Username: cti_dashboard
+    depends_on:
+      cti-db:
+        condition: service_healthy
+    ports:
+      - "${CTI_DASHBOARD_BIND:-127.0.0.1}:${CTI_DASHBOARD_PORT:-8080}:8080"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    pids_limit: 128
+    mem_limit: 192m
+    cpus: 0.50
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/health/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - cti
+
+volumes:
+  cti_pgdata:
+
+networks:
+  cti:
+    name: ${CTI_NETWORK_NAME:-cti-self-hosted}

@@ -1,0 +1,44 @@
+.report-markdown {
+  color: #c7ceca;
+}
+
+.report-markdown h2,
+.report-markdown h3,
+.report-markdown h4 {
+  color: var(--ink);
+  line-height: 1.25;
+  margin: 1.75rem 0 0.65rem;
+}
+
+.report-markdown h2 {
+  font: 1.65rem/1.25 Georgia, serif;
+}
+
+.report-markdown h3 {
+  font-size: 1.15rem;
+}
+
+.report-markdown h4 {
+  color: var(--accent);
+  font-size: 1rem;
+}
+
+.report-markdown p {
+  margin: 0.65rem 0;
+}
+
+.report-markdown .report-source {
+  overflow-wrap: anywhere;
+}
+
+.report-markdown a {
+  color: var(--accent);
+  text-underline-offset: 4px;
+}
+
+.report-timestamps {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  margin-top: 2rem !important;
+  padding-top: 1rem;
+}

@@ -1,0 +1,83 @@
+{
+  "name": "n8n Workflow Error Alerts",
+  "description": "Sends sanitized, actionable n8n workflow failure details to the private Telegram operator chat.",
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "994fed06-312c-4d6c-a52e-701eeebb1f85",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "const event = $input.first()?.json ?? {};\nconst execution = event.execution ?? {};\nconst error = execution.error ?? event.error ?? {};\n\nconst sanitize = (value, maxLength = 900) => {\n  let text = String(value ?? '');\n  text = text\n    .replace(/(authorization\\s*[:=]\\s*)(?:bearer\\s+)?[^\\s,;]+/gi, '$1[REDACTED]')\n    .replace(/\\bbot\\d{6,}:[A-Za-z0-9_-]{20,}\\b/g, 'bot[REDACTED]')\n    .replace(/((?:api[_-]?key|token|password|secret|credential)\\s*[:=]\\s*)[\"']?[^\"'\\s,;]+/gi, '$1[REDACTED]')\n    .replace(/postgres(?:ql)?:\\/\\/[^@\\s]+@/gi, 'postgresql://[REDACTED]@')\n    .replace(/[\\u0000-\\u001F\\u007F]+/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n  return text.slice(0, maxLength);\n};\n\nconst workflowName = sanitize(event.workflow?.name ?? 'Unknown workflow', 180);\nconst failedNode = sanitize(\n  execution.lastNodeExecuted ?? event.lastNodeExecuted ?? 'Unknown node',\n  180,\n);\nconst summary = sanitize(\n  error.description ??\n    error.cause?.message ??\n    error.message ??\n    'Unknown workflow error',\n  900,\n);\nconst genericMessage = sanitize(error.message, 600);\nconst technicalDetail =\n  genericMessage &&\n  genericMessage.toLocaleLowerCase('en-US') !== summary.toLocaleLowerCase('en-US')\n    ? genericMessage\n    : '';\n\nconst errorType = sanitize(error.name ?? error.type, 100);\nconst httpCode = sanitize(\n  error.httpCode ??\n    error.statusCode ??\n    error.response?.statusCode ??\n    error.context?.httpCode,\n  20,\n);\nconst executionUrl = sanitize(execution.url ?? 'Not available', 700);\nconst occurredAt = new Date().toISOString();\n\nconst lines = [\n  '⚠️ n8n workflow failed',\n  '',\n  `Workflow: ${workflowName}`,\n  `Node: ${failedNode}`,\n  `Error: ${summary}`,\n];\n\nif (technicalDetail) lines.push(`Detail: ${technicalDetail}`);\nif (errorType) lines.push(`Type: ${errorType}`);\nif (httpCode) lines.push(`HTTP: ${httpCode}`);\n\nlines.push(`Time: ${occurredAt}`);\nlines.push(`Execution: ${executionUrl}`);\n\nreturn [{ json: { message: lines.join('\\n').slice(0, 3500) } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "d97b6bf1-7097-481a-a15a-92b31203fc07",
+      "name": "Format Error Alert"
+    },
+    {
+      "parameters": {
+        "chatId": "6552428480",
+        "text": "={{ $json.message }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        416,
+        0
+      ],
+      "id": "22861b12-123f-4069-8bab-ec5c2597f9b0",
+      "name": "Send a text message",
+      "webhookId": "db95504a-ca59-4cd1-8f1b-731c832cdd7c"
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error Alert": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "tags": []
+}

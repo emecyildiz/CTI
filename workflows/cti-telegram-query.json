@@ -1,0 +1,284 @@
+{
+  "name": "CTI Telegram Query",
+  "description": "Private Telegram menu and recent CTI category or keyword lookup without AI calls.",
+  "active": false,
+  "nodes": [
+    {
+      "id": "d79b18ab-7198-47a1-af34-05441058fca8",
+      "name": "Private CTI Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        180
+      ],
+      "webhookId": "a67880a0-2f3a-4b19-b94e-c85c43f89e06",
+      "parameters": {
+        "updates": [
+          "message",
+          "callback_query"
+        ],
+        "additionalFields": {}
+      }
+    },
+    {
+      "id": "6ffdf649-01ca-4eec-aa57-f0a0d7ee60b6",
+      "name": "Authorize and Parse Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const update = $input.first()?.json ?? {};\nconst callback = update.callback_query ?? null;\nconst message = update.message ?? null;\nconst fromId = String(callback?.from?.id ?? message?.from?.id ?? '');\nconst chatId = String(callback?.message?.chat?.id ?? message?.chat?.id ?? '');\nconst allowedId = '6552428480';\nif (fromId !== allowedId || chatId !== allowedId) return [];\n\nlet action = 'help';\nlet query = '';\nconst callbackData = String(callback?.data ?? '');\nconst categoryMatch = callbackData.match(/^cti:category:(malware|vulnerability|data_breach|threat_intelligence|other)$/);\nif (categoryMatch) {\n  action = 'category';\n  query = categoryMatch[1];\n} else if (callbackData === 'cti:menu') {\n  action = 'menu';\n} else if (!callback) {\n  const text = String(message?.text ?? '').replace(/[\\u0000-\\u001F\\u007F]/g, ' ').replace(/\\s+/g, ' ').trim();\n  const lower = text.toLocaleLowerCase('en-US');\n  const categories = new Map([\n    ['malware', 'malware'], ['zararlı yazılım', 'malware'],\n    ['vulnerability', 'vulnerability'], ['vulnerabilities', 'vulnerability'], ['zafiyet', 'vulnerability'],\n    ['data breach', 'data_breach'], ['data breaches', 'data_breach'], ['veri ihlali', 'data_breach'],\n    ['threat intelligence', 'threat_intelligence'], ['tehdit istihbaratı', 'threat_intelligence'],\n    ['other', 'other'], ['diğer', 'other']\n  ]);\n  if (lower === '/start' || lower === '/menu' || lower === 'menu') {\n    action = 'menu';\n  } else if (lower === '/help' || lower === 'help' || lower === 'yardım') {\n    action = 'help';\n  } else if (categories.has(lower)) {\n    action = 'category';\n    query = categories.get(lower);\n  } else {\n    query = lower.replace(/^\\/search\\s+/, '').trim();\n    if (query.length >= 2 && query.length <= 60 && /^[\\p{L}\\p{N}\\s._:/-]+$/u.test(query)) action = 'search';\n  }\n}\nreturn [{ json: { action, query: query || null, chat_id: chatId, has_callback: Boolean(callback), callback_query_id: callback?.id ?? null } }];"
+      }
+    },
+    {
+      "id": "6ab32511-867e-4c09-a2a4-ffcaf0735d81",
+      "name": "Is Callback Query",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        520,
+        180
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "e21070d9-acde-4440-929f-a2e5fc2451d6",
+              "leftValue": "={{ String($json.has_callback) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "91aa7a8f-8088-46e0-9831-ad9386af59be",
+      "name": "Answer Callback Query",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        760,
+        60
+      ],
+      "parameters": {
+        "resource": "callback",
+        "operation": "answerQuery",
+        "queryId": "={{ $json.callback_query_id }}",
+        "additionalFields": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "1ae78e22-8983-4cf4-bbbb-98bc70b0f7c9",
+      "name": "Lookup Recent CTI Articles",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1000,
+        180
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT cti.telegram_article_lookup($1, $2, $3) AS lookup_result;",
+        "options": {
+          "queryReplacement": "={{ [$(\"Authorize and Parse Request\").item.json.action, $(\"Authorize and Parse Request\").item.json.query, 5] }}"
+        }
+      }
+    },
+    {
+      "id": "dd582358-a920-4556-9589-7ec3e093707c",
+      "name": "Format Safe CTI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        180
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const request = $('Authorize and Parse Request').item.json;\nconst payload = typeof $json.lookup_result === 'string' ? JSON.parse($json.lookup_result) : $json.lookup_result;\nif (!payload || !Array.isArray(payload.articles)) throw new Error('Invalid CTI lookup response.');\nconst escapeHtml = (value) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst categoryNames = { malware: 'Malware', vulnerability: 'Vulnerabilities', data_breach: 'Data Breaches', threat_intelligence: 'Threat Intelligence', other: 'Other' };\nconst severityNames = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', unknown: 'Unknown' };\nlet message;\nif (payload.action === 'menu') {\n  message = '<b>🛡️ CTI News Query</b>\\n\\nChoose a category below or send a keyword such as <code>ransomware</code>, <code>CVE-2026</code>, or <code>browser vulnerability</code>.\\n\\nOnly analyzed articles from the last 8 days are searched. No AI call is used.';\n} else if (payload.action === 'help') {\n  message = '<b>CTI bot commands</b>\\n\\n<code>/menu</code> — show categories\\n<code>/search keyword</code> — search recent analyzed news\\n\\nYou can also send the keyword directly.';\n} else {\n  const label = payload.action === 'category' ? categoryNames[payload.query] : `Search: ${payload.query}`;\n  message = `<b>🛡️ ${escapeHtml(label ?? 'CTI Results')}</b>\\n`;\n  if (payload.articles.length === 0) {\n    message += '\\nNo matching analyzed article was found in the last 8 days.';\n  } else {\n    for (let index = 0; index < payload.articles.length; index++) {\n      const article = payload.articles[index];\n      const title = escapeHtml(String(article.title ?? '').slice(0, 220));\n      const summary = escapeHtml(String(article.summary_tr ?? '').replace(/\\s+/g, ' ').slice(0, 520));\n      const source = escapeHtml(String(article.source_name ?? '').slice(0, 100));\n      const severity = escapeHtml(severityNames[article.severity] ?? 'Unknown');\n      const url = escapeHtml(String(article.canonical_url ?? ''));\n      const block = `\\n\\n<b>${index + 1}. ${title}</b>\\n${severity} · ${source}\\n${summary}\\n${url}`;\n      if (message.length + block.length > 3850) break;\n      message += block;\n    }\n  }\n}\nreturn { json: { chat_id: request.chat_id, message } };"
+      }
+    },
+    {
+      "id": "47ef52f4-99ed-40c6-ae2a-b9a25bd938e1",
+      "name": "Send Private CTI Response",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1520,
+        180
+      ],
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.message }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🦠 Malware",
+                    "additionalFields": {
+                      "callback_data": "cti:category:malware"
+                    }
+                  },
+                  {
+                    "text": "🧩 Vulnerabilities",
+                    "additionalFields": {
+                      "callback_data": "cti:category:vulnerability"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🔓 Data Breaches",
+                    "additionalFields": {
+                      "callback_data": "cti:category:data_breach"
+                    }
+                  },
+                  {
+                    "text": "🛰️ Threat Intel",
+                    "additionalFields": {
+                      "callback_data": "cti:category:threat_intelligence"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "📚 Other",
+                    "additionalFields": {
+                      "callback_data": "cti:category:other"
+                    }
+                  },
+                  {
+                    "text": "🏠 Menu",
+                    "additionalFields": {
+                      "callback_data": "cti:menu"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Private CTI Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Authorize and Parse Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authorize and Parse Request": {
+      "main": [
+        [
+          {
+            "node": "Is Callback Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Callback Query": {
+      "main": [
+        [
+          {
+            "node": "Answer Callback Query",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Lookup Recent CTI Articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer Callback Query": {
+      "main": [
+        [
+          {
+            "node": "Lookup Recent CTI Articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Recent CTI Articles": {
+      "main": [
+        [
+          {
+            "node": "Format Safe CTI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Safe CTI Response": {
+      "main": [
+        [
+          {
+            "node": "Send Private CTI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "errorWorkflow": "ojyQAZWnKBIKpigj",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "tags": []
+}

@@ -1,0 +1,62 @@
+# n8n credential and activation guide
+
+All public workflow exports are deliberately disabled and contain no credential identifiers. Import them only once, then map operator-owned credentials in the n8n editor.
+
+## One-time import
+
+Set `N8N_CONTAINER` in `.env`, start CTI Self-Hosted, then run:
+
+```sh
+CTI_IMPORT_CONFIRM=IMPORT_DISABLED_WORKFLOWS \
+sh ./scripts/import-workflows.sh
+```
+
+The script verifies Docker, n8n 2.x, password separation, and the CTI network. It connects the existing n8n container to the CTI network when necessary, copies the sanitized exports into a temporary container directory, imports them disabled, and removes the temporary files. Running it again creates duplicate workflows.
+
+## PostgreSQL credential
+
+Create one PostgreSQL credential in n8n and assign it to every PostgreSQL node:
+
+- Name: `CTI PostgreSQL`
+- Host: `cti-db`
+- Port: `5432`
+- Database: `cti`
+- User: `cti_n8n`
+- Password: `CTI_APP_PASSWORD` from `.env`
+- SSL: disabled inside the private Docker network
+
+This role is not the database owner and cannot read internal event-clustering tables directly.
+
+## Gemini credential
+
+Assign an operator-owned Google Gemini credential only to:
+
+- `CTI Article Analysis` → `Analyze With Gemini`
+- `CTI Weekly Report` → its Gemini model node
+
+Feed collection, dashboard filtering, Telegram queries, retention, KEV synchronization, and EPSS enrichment do not require Gemini.
+
+## Telegram credential (optional)
+
+Assign a Telegram bot credential only if these optional workflows will be used:
+
+- `CTI Telegram Query`
+- `CTI Weekly Telegram Delivery`
+- `n8n Workflow Error Alerts`
+
+Review the permitted chat/user identifiers before activation. Never publish the private query bot without an authorization check.
+
+## Activation order
+
+Activate one workflow at a time and inspect its first execution:
+
+1. `CTI Source Collection`
+2. `CTI Article Analysis`
+3. `CTI Vulnerability Enrichment`
+4. `CTI Retention Maintenance`
+5. `CTI Weekly Report`
+6. optional Telegram workflows
+7. optional n8n error alerts
+
+After Source Collection runs, verify the dashboard and confirm that all five sources have a recent successful check. Article Analysis should be activated only after the PostgreSQL and Gemini nodes both show valid credentials.
+
