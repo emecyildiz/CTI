@@ -52,9 +52,11 @@ sh ./scripts/install.sh
 ```
 
 Open `http://127.0.0.1:8080`. The dashboard intentionally listens only on localhost.
-The protected `/setup` page provides an installation and source-health check plus a provider-neutral AI profile. The CSRF-protected profile form stores only provider, adapter, model, and optional base-URL metadata. It never accepts an API key and does not modify credentials, workflows, or activation state.
+The protected `/setup` page provides an installation and source-health check plus a provider-neutral AI profile. The CSRF-protected profile form stores only provider, adapter, model, and optional base-URL metadata.
 
 The same page performs a secret-free n8n handoff preflight against `CTI_N8N_API_URL`. It checks the health endpoint, confirms the credential schema route exists, and verifies that an unauthenticated request is rejected. The probe never sends an n8n API key or AI credential.
+
+For the bundled Gemini adapter, the one-time handoff form accepts an n8n API key with `credential:list`, `credential:create`, and `credential:update` scopes plus the Gemini API key. Both values remain request-scoped: the dashboard resolves the reserved `CTI Self-Hosted - Google Gemini` credential by name and creates or updates it directly through the n8n public API. Neither key is written to PostgreSQL, reflected in HTML, or placed in a URL. This step does not import, modify, or activate workflows.
 
 ### Connect n8n
 

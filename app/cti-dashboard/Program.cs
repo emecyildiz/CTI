@@ -1,6 +1,8 @@
 using System.Globalization;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -146,7 +148,7 @@ app.MapGet("/setup", async (
             aiProvider,
             n8nStatus,
             csrfToken,
-            string.Equals(result, "saved", StringComparison.Ordinal),
+            result,
             GetAuthenticatedIdentity(context)),
         "text/html; charset=utf-8");
 });
@@ -223,6 +225,84 @@ app.MapPost("/setup/ai-profile", async (
 
     await transaction.CommitAsync(cancellationToken);
     return Results.Redirect("/setup?result=saved");
+});
+
+app.MapPost("/setup/credential-handoff", async (
+    HttpContext context,
+    NpgsqlDataSource dataSource,
+    N8nHandoffProbe n8nProbe,
+    CancellationToken cancellationToken) =>
+{
+    if (!context.Request.HasFormContentType)
+    {
+        return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+    }
+
+    if (context.Request.ContentLength is null or <= 0 or > 16384)
+    {
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+    }
+
+    var form = await context.Request.ReadFormAsync(cancellationToken);
+    if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    await using (var command = dataSource.CreateCommand("""
+                     SELECT profile_defined, provider_key, adapter_key
+                     FROM cti.dashboard_ai_provider_status;
+                     """))
+    await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+    {
+        if (!await reader.ReadAsync(cancellationToken) ||
+            !reader.GetBoolean(0) ||
+            !string.Equals(reader.GetString(1), "google_gemini", StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(2), "google_gemini", StringComparison.Ordinal))
+        {
+            return Results.Text(
+                "Save the bundled Google Gemini profile before handing off a credential.",
+                "text/plain; charset=utf-8",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
+    var aiApiKey = form["ai_api_key"].FirstOrDefault() ?? string.Empty;
+    if (!IsValidSecretInput(n8nApiKey, 20, 4096) ||
+        !IsValidSecretInput(aiApiKey, 20, 512))
+    {
+        return Results.BadRequest("Invalid API key format.");
+    }
+
+    var handoff = await n8nProbe.UpsertGoogleGeminiCredentialAsync(
+        n8nApiKey,
+        aiApiKey,
+        cancellationToken);
+
+    return handoff.Status switch
+    {
+        N8nCredentialHandoffStatus.Created =>
+            Results.Redirect("/setup?result=credential_created"),
+        N8nCredentialHandoffStatus.Updated =>
+            Results.Redirect("/setup?result=credential_updated"),
+        N8nCredentialHandoffStatus.AuthenticationFailed => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status401Unauthorized),
+        N8nCredentialHandoffStatus.Conflict => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status409Conflict),
+        N8nCredentialHandoffStatus.Unavailable => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status503ServiceUnavailable),
+        _ => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status502BadGateway)
+    };
 });
 
 app.MapGet("/", async (
@@ -447,6 +527,13 @@ static bool IsValidSetupCsrfToken(string? token) =>
     token is { Length: 43 } && token.All(character =>
         char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
 
+static bool IsValidSecretInput(string value, int minimumLength, int maximumLength) =>
+    value.Length >= minimumLength &&
+    value.Length <= maximumLength &&
+    value.All(character => char.IsAscii(character) &&
+                           !char.IsControl(character) &&
+                           !char.IsWhiteSpace(character));
+
 static bool IsSameSetupOrigin(HttpRequest request)
 {
     var origin = request.Headers.Origin.FirstOrDefault();
@@ -519,11 +606,32 @@ internal sealed record N8nHandoffStatus(
     string ApiBaseUrl,
     string Detail);
 
+internal enum N8nCredentialHandoffStatus
+{
+    Created,
+    Updated,
+    AuthenticationFailed,
+    Conflict,
+    Missing,
+    Rejected,
+    Unavailable
+}
+
+internal sealed record N8nCredentialHandoffResult(
+    N8nCredentialHandoffStatus Status,
+    string Message);
+
 internal sealed class N8nHandoffProbe : IDisposable
 {
+    private const string CredentialName = "CTI Self-Hosted - Google Gemini";
+    private const string CredentialType = "googlePalmApi";
+    private const string GeminiHost = "https://generativelanguage.googleapis.com";
+    private const int MaximumResponseBytes = 262144;
     private readonly HttpClient client;
+    private readonly Uri apiBaseUri;
     private readonly Uri healthUri;
     private readonly Uri credentialSchemaUri;
+    private readonly SemaphoreSlim credentialLock = new(1, 1);
 
     internal N8nHandoffProbe(string configuredApiUrl)
     {
@@ -540,6 +648,7 @@ internal sealed class N8nHandoffProbe : IDisposable
         }
 
         ApiBaseUrl = apiUri.AbsoluteUri.TrimEnd('/');
+        apiBaseUri = apiUri;
         credentialSchemaUri = new Uri(apiUri, "credentials/schema/googlePalmApi");
         var apiPath = apiUri.AbsolutePath.TrimEnd('/');
         var prefix = apiPath[..^"/api/v1".Length];
@@ -557,6 +666,276 @@ internal sealed class N8nHandoffProbe : IDisposable
     }
 
     internal string ApiBaseUrl { get; }
+
+    internal async Task<N8nCredentialHandoffResult> UpsertGoogleGeminiCredentialAsync(
+        string n8nApiKey,
+        string geminiApiKey,
+        CancellationToken cancellationToken)
+    {
+        await credentialLock.WaitAsync(cancellationToken);
+        try
+        {
+            var lookup = await FindManagedCredentialAsync(n8nApiKey, cancellationToken);
+            if (lookup.Error is not null)
+            {
+                return lookup.Error;
+            }
+
+            if (lookup.CredentialId is not null)
+            {
+                var updated = await WriteCredentialAsync(
+                    HttpMethod.Patch,
+                    new Uri(apiBaseUri, $"credentials/{Uri.EscapeDataString(lookup.CredentialId)}"),
+                    n8nApiKey,
+                    geminiApiKey,
+                    N8nCredentialHandoffStatus.Updated,
+                    cancellationToken);
+                if (updated.Status != N8nCredentialHandoffStatus.Missing)
+                {
+                    return updated;
+                }
+            }
+
+            return await WriteCredentialAsync(
+                HttpMethod.Post,
+                new Uri(apiBaseUri, "credentials"),
+                n8nApiKey,
+                geminiApiKey,
+                N8nCredentialHandoffStatus.Created,
+                cancellationToken);
+        }
+        catch (Exception exception) when (
+            (exception is HttpRequestException ||
+             exception is TaskCanceledException ||
+             exception is JsonException ||
+             exception is InvalidDataException) &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            return exception is HttpRequestException or TaskCanceledException
+                ? new N8nCredentialHandoffResult(
+                    N8nCredentialHandoffStatus.Unavailable,
+                    "n8n could not be reached. No credential was stored in PostgreSQL.")
+                : new N8nCredentialHandoffResult(
+                    N8nCredentialHandoffStatus.Rejected,
+                    "n8n returned an invalid credential response.");
+        }
+        finally
+        {
+            credentialLock.Release();
+        }
+    }
+
+    private async Task<(string? CredentialId, N8nCredentialHandoffResult? Error)>
+        FindManagedCredentialAsync(string n8nApiKey, CancellationToken cancellationToken)
+    {
+        string? cursor = null;
+        string? matchedId = null;
+        for (var page = 0; page < 10; page++)
+        {
+            var relativeUrl = cursor is null
+                ? "credentials?limit=100"
+                : $"credentials?limit=100&cursor={Uri.EscapeDataString(cursor)}";
+            using var request = CreateAuthorizedRequest(
+                HttpMethod.Get,
+                new Uri(apiBaseUri, relativeUrl),
+                n8nApiKey);
+            using var response = await client.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            {
+                return (null, new N8nCredentialHandoffResult(
+                    N8nCredentialHandoffStatus.AuthenticationFailed,
+                    "n8n API authentication failed or the key lacks credential:list permission."));
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return (null, new N8nCredentialHandoffResult(
+                    N8nCredentialHandoffStatus.Rejected,
+                    $"n8n rejected credential discovery with HTTP {(int)response.StatusCode}."));
+            }
+
+            var payload = await ReadLimitedContentAsync(response.Content, cancellationToken);
+            using var document = JsonDocument.Parse(payload);
+            if (!document.RootElement.TryGetProperty("data", out var credentials) ||
+                credentials.ValueKind != JsonValueKind.Array)
+            {
+                throw new JsonException("Credential list does not contain a data array.");
+            }
+
+            foreach (var credential in credentials.EnumerateArray())
+            {
+                if (!credential.TryGetProperty("name", out var nameElement) ||
+                    !string.Equals(nameElement.GetString(), CredentialName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!credential.TryGetProperty("type", out var typeElement) ||
+                    !string.Equals(typeElement.GetString(), CredentialType, StringComparison.Ordinal) ||
+                    !credential.TryGetProperty("id", out var idElement) ||
+                    !IsSafeCredentialId(idElement.GetString()))
+                {
+                    return (null, new N8nCredentialHandoffResult(
+                        N8nCredentialHandoffStatus.Conflict,
+                        "A credential with the reserved CTI name exists but is not compatible."));
+                }
+
+                if (matchedId is not null)
+                {
+                    return (null, new N8nCredentialHandoffResult(
+                        N8nCredentialHandoffStatus.Conflict,
+                        "Multiple credentials use the reserved CTI name; resolve them in n8n first."));
+                }
+
+                matchedId = idElement.GetString();
+            }
+
+            cursor = document.RootElement.TryGetProperty("nextCursor", out var cursorElement) &&
+                     cursorElement.ValueKind == JsonValueKind.String
+                ? cursorElement.GetString()
+                : null;
+            if (string.IsNullOrEmpty(cursor))
+            {
+                return (matchedId, null);
+            }
+        }
+
+        return (null, new N8nCredentialHandoffResult(
+            N8nCredentialHandoffStatus.Conflict,
+            "Credential discovery exceeded the safe pagination limit."));
+    }
+
+    private async Task<N8nCredentialHandoffResult> WriteCredentialAsync(
+        HttpMethod method,
+        Uri endpoint,
+        string n8nApiKey,
+        string geminiApiKey,
+        N8nCredentialHandoffStatus successStatus,
+        CancellationToken cancellationToken)
+    {
+        var credentialData = new
+        {
+            host = GeminiHost,
+            apiKey = geminiApiKey
+        };
+        var payload = method == HttpMethod.Patch
+            ? JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                name = CredentialName,
+                type = CredentialType,
+                data = credentialData,
+                isPartialData = false
+            })
+            : JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                name = CredentialName,
+                type = CredentialType,
+                data = credentialData
+            });
+
+        try
+        {
+            using var request = CreateAuthorizedRequest(method, endpoint, n8nApiKey);
+            request.Content = new ByteArrayContent(payload);
+            request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+            using var response = await client.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            {
+                return new N8nCredentialHandoffResult(
+                    N8nCredentialHandoffStatus.AuthenticationFailed,
+                    "n8n API authentication failed or the key lacks credential create/update permission.");
+            }
+
+            if (method == HttpMethod.Patch && response.StatusCode == HttpStatusCode.NotFound)
+            {
+                return new N8nCredentialHandoffResult(
+                    N8nCredentialHandoffStatus.Missing,
+                    "The managed n8n credential no longer exists.");
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return new N8nCredentialHandoffResult(
+                    N8nCredentialHandoffStatus.Rejected,
+                    $"n8n rejected the credential handoff with HTTP {(int)response.StatusCode}.");
+            }
+
+            var responsePayload = await ReadLimitedContentAsync(response.Content, cancellationToken);
+            using var document = JsonDocument.Parse(responsePayload);
+            if (!document.RootElement.TryGetProperty("id", out var idElement) ||
+                !IsSafeCredentialId(idElement.GetString()) ||
+                !document.RootElement.TryGetProperty("name", out var nameElement) ||
+                !string.Equals(nameElement.GetString(), CredentialName, StringComparison.Ordinal) ||
+                !document.RootElement.TryGetProperty("type", out var typeElement) ||
+                !string.Equals(typeElement.GetString(), CredentialType, StringComparison.Ordinal))
+            {
+                throw new JsonException("Credential response identity did not match the request.");
+            }
+
+            return new N8nCredentialHandoffResult(
+                successStatus,
+                successStatus == N8nCredentialHandoffStatus.Created
+                    ? "Gemini credential created in n8n."
+                    : "Gemini credential updated in n8n.");
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(payload);
+        }
+    }
+
+    private static HttpRequestMessage CreateAuthorizedRequest(
+        HttpMethod method,
+        Uri endpoint,
+        string n8nApiKey)
+    {
+        var request = new HttpRequestMessage(method, endpoint);
+        request.Headers.TryAddWithoutValidation("X-N8N-API-KEY", n8nApiKey);
+        return request;
+    }
+
+    private static bool IsSafeCredentialId(string? value) =>
+        value is { Length: >= 1 and <= 128 } &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
+
+    private static async Task<byte[]> ReadLimitedContentAsync(
+        HttpContent content,
+        CancellationToken cancellationToken)
+    {
+        if (content.Headers.ContentLength > MaximumResponseBytes)
+        {
+            throw new InvalidDataException("n8n response exceeded the size limit.");
+        }
+
+        await using var stream = await content.ReadAsStreamAsync(cancellationToken);
+        using var output = new MemoryStream();
+        var buffer = new byte[8192];
+        while (true)
+        {
+            var read = await stream.ReadAsync(buffer, cancellationToken);
+            if (read == 0)
+            {
+                break;
+            }
+
+            if (output.Length + read > MaximumResponseBytes)
+            {
+                throw new InvalidDataException("n8n response exceeded the size limit.");
+            }
+
+            output.Write(buffer, 0, read);
+        }
+
+        return output.ToArray();
+    }
 
     internal async Task<N8nHandoffStatus> CheckAsync(CancellationToken cancellationToken)
     {
@@ -684,7 +1063,7 @@ internal static class HtmlPages
         AiProviderStatus aiProvider,
         N8nHandoffStatus n8nStatus,
         string csrfToken,
-        bool profileSaved,
+        string? result,
         string email)
     {
         var sourceHealthClass = status.FailingSourceCount > 0 ? "warning" : "ready";
@@ -716,16 +1095,34 @@ internal static class HtmlPages
         var selectedProvider = aiProvider.ProviderKey ?? "google_gemini";
         var selectedModel = aiProvider.ModelIdentifier ?? "models/gemini-3.6-flash";
         var selectedEndpoint = aiProvider.ApiBaseUrl ?? string.Empty;
-        var savedNotice = profileSaved
-            ? "<aside class=\"setup-result\"><strong>AI profile saved.</strong><span>No credential or workflow state was changed.</span></aside>"
-            : string.Empty;
+        var savedNotice = result switch
+        {
+            "saved" => "<aside class=\"setup-result\"><strong>AI profile saved.</strong><span>No credential or workflow state was changed.</span></aside>",
+            "credential_created" => "<aside class=\"setup-result\"><strong>Gemini credential created in n8n.</strong><span>The API keys were not stored in PostgreSQL or returned to the page.</span></aside>",
+            "credential_updated" => "<aside class=\"setup-result\"><strong>Gemini credential updated in n8n.</strong><span>The existing reserved CTI credential was reused.</span></aside>",
+            _ => string.Empty
+        };
         var handoffReady = n8nStatus.HealthReady &&
                            n8nStatus.CredentialApiDetected &&
                            n8nStatus.AuthenticationRequired;
+        var credentialFormReady = handoffReady &&
+                                  aiProvider.ProfileDefined &&
+                                  string.Equals(aiProvider.ProviderKey, "google_gemini", StringComparison.Ordinal) &&
+                                  string.Equals(aiProvider.AdapterKey, "google_gemini", StringComparison.Ordinal);
+        var credentialForm = credentialFormReady
+            ? $$"""
+                <form class="credential-form" method="post" action="/setup/credential-handoff" autocomplete="off">
+                  <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
+                  <label>n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+                  <label>Google Gemini API key<input type="password" name="ai_api_key" minlength="20" maxlength="512" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+                  <div class="credential-guidance"><p>The n8n key needs <code>credential:list</code>, <code>credential:create</code>, and <code>credential:update</code> scopes. The Gemini key is written directly to n8n's encrypted credential store.</p><button type="submit">Create or update credential</button></div>
+                </form>
+                """
+            : $"<div class=\"credential-unavailable\"><strong>Credential input is locked.</strong><p>{E(aiProvider.ProviderKey == "google_gemini" ? "Complete the n8n boundary check first." : "Save the bundled Google Gemini profile first.")}</p></div>";
 
         return Layout("Guided setup", email, $$"""
             <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
-            <aside class="setup-notice"><strong>Credential-safe profile</strong><span>This step saves metadata only. API keys are neither accepted nor stored in the CTI database.</span></aside>
+            <aside class="setup-notice"><strong>One-time credential handoff</strong><span>API keys are accepted only by the protected handoff form, forwarded directly to n8n, and never stored in the CTI database.</span></aside>
             {{savedNotice}}
             <ol class="setup-steps" aria-label="Setup progress">
               <li class="complete"><span>01</span><strong>System check</strong><small>Passed</small></li>
@@ -741,7 +1138,7 @@ internal static class HtmlPages
                 <article><span>Reviewed sources</span><strong>{{status.EnabledSourceCount}} enabled / {{status.TotalSourceCount}} defined</strong><small>{{status.CheckedSourceCount}} enabled sources have completed a successful check.</small></article>
                 <article><span>Source health</span><strong class="{{sourceHealthClass}}">{{E(sourceHealthLabel)}}</strong><small>Last successful collection: {{E(lastCollection)}}</small></article>
                 <article><span>Access boundary</span><strong>{{E(accessLabel)}}</strong><small>The setup route uses the same protection as the dashboard.</small></article>
-                <article><span>Configuration writes</span><strong>Profile metadata only</strong><small>No secrets or workflow state can be changed in this package.</small></article>
+                <article><span>CTI database writes</span><strong>Profile metadata only</strong><small>Credential material remains outside the PostgreSQL schema.</small></article>
               </div>
             </section>
             <section class="setup-panel ai-panel">
@@ -777,8 +1174,9 @@ internal static class HtmlPages
                   <article><span>Credential API</span><strong>{{(n8nStatus.CredentialApiDetected ? "Detected" : "Not detected")}}</strong><small>{{(n8nStatus.AuthenticationRequired ? "Unauthenticated access rejected." : "Authentication boundary not confirmed.")}}</small></article>
                   <article><span>Configured API URL</span><strong>{{E(n8nStatus.ApiBaseUrl)}}</strong><small>{{E(n8nStatus.Detail)}}</small></article>
                 </div>
+                {{credentialForm}}
               </div>
-              <div class="setup-next"><div><strong>Next: protected credential handoff</strong><p>The following package will accept one-time credential input and hand it directly to n8n without placing it in PostgreSQL.</p></div><button type="button" disabled aria-disabled="true">Credential handoff is next</button></div>
+              <div class="setup-next"><div><strong>Next: workflow credential mapping</strong><p>The following package will map the reserved n8n credential to the bundled Gemini workflow nodes without activating any workflow.</p></div><button type="button" disabled aria-disabled="true">Workflow mapping is next</button></div>
             </section>
             """);
     }
