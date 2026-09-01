@@ -54,6 +54,8 @@ sh ./scripts/install.sh
 Open `http://127.0.0.1:8080`. The dashboard intentionally listens only on localhost.
 The protected `/setup` page provides an installation and source-health check plus a provider-neutral AI profile. The CSRF-protected profile form stores only provider, adapter, model, and optional base-URL metadata. It never accepts an API key and does not modify credentials, workflows, or activation state.
 
+The same page performs a secret-free n8n handoff preflight against `CTI_N8N_API_URL`. It checks the health endpoint, confirms the credential schema route exists, and verifies that an unauthenticated request is rejected. The probe never sends an n8n API key or AI credential.
+
 ### Connect n8n
 
 Attach the n8n container to the CTI network, or declare the network as external in the n8n Compose file:

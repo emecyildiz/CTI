@@ -43,6 +43,7 @@ services:
       CTI_AUTH_MODE: local
       CTI_APPLICATION_NAME: cti-self-hosted-dashboard
       CTI_DASHBOARD_PASSWORD: ${CTI_DASHBOARD_PASSWORD:?set CTI_DASHBOARD_PASSWORD in .env}
+      CTI_N8N_API_URL: ${CTI_N8N_API_URL:-http://cti-n8n:5678/api/v1}
       CtiDatabase__Host: cti-db
       CtiDatabase__Name: ${POSTGRES_DB:-cti}
       CtiDatabase__Username: cti_dashboard

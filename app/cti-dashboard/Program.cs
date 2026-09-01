@@ -23,6 +23,8 @@ builder.Services.AddSingleton<NpgsqlDataSource>(_ =>
     var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
     return dataSourceBuilder.Build();
 });
+builder.Services.AddSingleton(_ => new N8nHandoffProbe(
+    builder.Configuration["CTI_N8N_API_URL"] ?? "http://cti-n8n:5678/api/v1"));
 
 var app = builder.Build();
 var environment = app.Environment;
@@ -90,6 +92,7 @@ app.MapGet("/health/ready", async (NpgsqlDataSource dataSource, CancellationToke
 app.MapGet("/setup", async (
     HttpContext context,
     NpgsqlDataSource dataSource,
+    N8nHandoffProbe n8nProbe,
     string? result,
     CancellationToken cancellationToken) =>
 {
@@ -135,11 +138,13 @@ app.MapGet("/setup", async (
         providerReader.GetString(6),
         providerReader.IsDBNull(7) ? null : providerReader.GetDateTime(7));
     var csrfToken = GetOrCreateSetupCsrfToken(context);
+    var n8nStatus = await n8nProbe.CheckAsync(cancellationToken);
 
     return Results.Content(
         HtmlPages.Setup(
             status,
             aiProvider,
+            n8nStatus,
             csrfToken,
             string.Equals(result, "saved", StringComparison.Ordinal),
             GetAuthenticatedIdentity(context)),
@@ -506,6 +511,104 @@ internal sealed record AiProviderStatus(
     string? AdapterKey, string? ModelIdentifier, string? ApiBaseUrl,
     string AdapterStatus, DateTime? UpdatedAt);
 
+internal sealed record N8nHandoffStatus(
+    bool Reachable,
+    bool HealthReady,
+    bool CredentialApiDetected,
+    bool AuthenticationRequired,
+    string ApiBaseUrl,
+    string Detail);
+
+internal sealed class N8nHandoffProbe : IDisposable
+{
+    private readonly HttpClient client;
+    private readonly Uri healthUri;
+    private readonly Uri credentialSchemaUri;
+
+    internal N8nHandoffProbe(string configuredApiUrl)
+    {
+        if (!Uri.TryCreate(configuredApiUrl.TrimEnd('/') + "/", UriKind.Absolute, out var apiUri) ||
+            (!string.Equals(apiUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+             !string.Equals(apiUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) ||
+            apiUri.UserInfo.Length > 0 ||
+            apiUri.Query.Length > 0 ||
+            apiUri.Fragment.Length > 0 ||
+            !apiUri.AbsolutePath.TrimEnd('/').EndsWith("/api/v1", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "CTI_N8N_API_URL must be an HTTP(S) URL ending in /api/v1 without credentials or query data.");
+        }
+
+        ApiBaseUrl = apiUri.AbsoluteUri.TrimEnd('/');
+        credentialSchemaUri = new Uri(apiUri, "credentials/schema/googlePalmApi");
+        var apiPath = apiUri.AbsolutePath.TrimEnd('/');
+        var prefix = apiPath[..^"/api/v1".Length];
+        var healthBuilder = new UriBuilder(apiUri)
+        {
+            Path = prefix + "/healthz",
+            Query = string.Empty,
+            Fragment = string.Empty
+        };
+        healthUri = healthBuilder.Uri;
+        client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+        {
+            Timeout = TimeSpan.FromSeconds(3)
+        };
+    }
+
+    internal string ApiBaseUrl { get; }
+
+    internal async Task<N8nHandoffStatus> CheckAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var healthResponse = await client.GetAsync(
+                healthUri,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            using var schemaRequest = new HttpRequestMessage(HttpMethod.Get, credentialSchemaUri);
+            using var schemaResponse = await client.SendAsync(
+                schemaRequest,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+
+            var healthReady = healthResponse.IsSuccessStatusCode;
+            var authenticationRequired = schemaResponse.StatusCode is
+                System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden;
+            var apiDetected = authenticationRequired || schemaResponse.IsSuccessStatusCode;
+            var detail = !healthReady
+                ? $"n8n responded, but health returned HTTP {(int)healthResponse.StatusCode}."
+                : authenticationRequired
+                    ? "Credential API detected; unauthenticated access was rejected."
+                    : schemaResponse.IsSuccessStatusCode
+                        ? "Credential schema was exposed without API authentication; handoff remains disabled."
+                        : $"Credential schema endpoint returned HTTP {(int)schemaResponse.StatusCode}.";
+
+            return new N8nHandoffStatus(
+                true,
+                healthReady,
+                apiDetected,
+                authenticationRequired,
+                ApiBaseUrl,
+                detail);
+        }
+        catch (Exception exception) when (
+            (exception is HttpRequestException || exception is TaskCanceledException) &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            return new N8nHandoffStatus(
+                false,
+                false,
+                false,
+                false,
+                ApiBaseUrl,
+                "n8n is not reachable from the dashboard network.");
+        }
+    }
+
+    public void Dispose() => client.Dispose();
+}
+
 internal static class HtmlPages
 {
     private static string E(string? value) => System.Net.WebUtility.HtmlEncode(value ?? string.Empty);
@@ -579,6 +682,7 @@ internal static class HtmlPages
     internal static string Setup(
         SetupSystemStatus status,
         AiProviderStatus aiProvider,
+        N8nHandoffStatus n8nStatus,
         string csrfToken,
         bool profileSaved,
         string email)
@@ -615,6 +719,9 @@ internal static class HtmlPages
         var savedNotice = profileSaved
             ? "<aside class=\"setup-result\"><strong>AI profile saved.</strong><span>No credential or workflow state was changed.</span></aside>"
             : string.Empty;
+        var handoffReady = n8nStatus.HealthReady &&
+                           n8nStatus.CredentialApiDetected &&
+                           n8nStatus.AuthenticationRequired;
 
         return Layout("Guided setup", email, $$"""
             <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
@@ -662,7 +769,16 @@ internal static class HtmlPages
                   <article><strong>Custom provider</strong><span class="check-state warning">Manual mapping</span><p>The validated prompt and JSON contract can be reused after a compatible workflow adapter is supplied.</p></article>
                 </div>
               </div>
-              <div class="setup-next"><div><strong>Next: protected credential handoff</strong><p>The following package will add validated profile writes and hand the API key to the credential backend without placing it in PostgreSQL.</p></div><button type="button" disabled aria-disabled="true">Credential handoff is next</button></div>
+              <div class="handoff-section">
+                <div class="setup-heading"><div><p class="eyebrow">CREDENTIAL HANDOFF PREFLIGHT</p><h3>n8n boundary check</h3></div><span class="check-state {{(handoffReady ? "ready" : "warning")}}">{{(handoffReady ? "Compatible" : "Not ready")}}</span></div>
+                <div class="handoff-grid">
+                  <article><span>Network reachability</span><strong>{{(n8nStatus.Reachable ? "Reachable" : "Unavailable")}}</strong><small>The probe sends no API key or credential data.</small></article>
+                  <article><span>Health endpoint</span><strong>{{(n8nStatus.HealthReady ? "Ready" : "Not ready")}}</strong><small>Checked through the configured internal n8n URL.</small></article>
+                  <article><span>Credential API</span><strong>{{(n8nStatus.CredentialApiDetected ? "Detected" : "Not detected")}}</strong><small>{{(n8nStatus.AuthenticationRequired ? "Unauthenticated access rejected." : "Authentication boundary not confirmed.")}}</small></article>
+                  <article><span>Configured API URL</span><strong>{{E(n8nStatus.ApiBaseUrl)}}</strong><small>{{E(n8nStatus.Detail)}}</small></article>
+                </div>
+              </div>
+              <div class="setup-next"><div><strong>Next: protected credential handoff</strong><p>The following package will accept one-time credential input and hand it directly to n8n without placing it in PostgreSQL.</p></div><button type="button" disabled aria-disabled="true">Credential handoff is next</button></div>
             </section>
             """);
     }
