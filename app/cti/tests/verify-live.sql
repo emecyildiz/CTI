@@ -2,8 +2,8 @@
 
 DO $$
 BEGIN
-    IF COALESCE((SELECT max(version) FROM cti.schema_versions), 0) < 26 THEN
-        RAISE EXCEPTION 'CTI schema version 26 is not installed.';
+    IF COALESCE((SELECT max(version) FROM cti.schema_versions), 0) < 27 THEN
+        RAISE EXCEPTION 'CTI schema version 27 is not installed.';
     END IF;
 
     IF has_table_privilege('cti_n8n', 'cti.articles', 'DELETE') THEN
@@ -176,8 +176,32 @@ BEGIN
     IF NOT has_table_privilege('cti_dashboard', 'cti.dashboard_articles', 'SELECT') OR
        NOT has_table_privilege('cti_dashboard', 'cti.dashboard_reports', 'SELECT') OR
        NOT has_table_privilege('cti_dashboard', 'cti.dashboard_ai_usage', 'SELECT') OR
-       NOT has_table_privilege('cti_dashboard', 'cti.dashboard_system_status', 'SELECT') THEN
+       NOT has_table_privilege('cti_dashboard', 'cti.dashboard_system_status', 'SELECT') OR
+       NOT has_table_privilege('cti_dashboard', 'cti.dashboard_ai_provider_status', 'SELECT') THEN
         RAISE EXCEPTION 'The dashboard role cannot read its restricted views.';
+    END IF;
+
+    IF has_table_privilege('cti_dashboard', 'cti.ai_provider_profile', 'SELECT') OR
+       has_table_privilege('cti_dashboard', 'cti.ai_provider_profile', 'INSERT') OR
+       has_table_privilege('cti_dashboard', 'cti.ai_provider_profile', 'UPDATE') OR
+       has_table_privilege('cti_n8n', 'cti.ai_provider_profile', 'SELECT') OR
+       has_table_privilege('cti_n8n', 'cti.ai_provider_profile', 'INSERT') OR
+       has_table_privilege('cti_n8n', 'cti.ai_provider_profile', 'UPDATE') THEN
+        RAISE EXCEPTION 'A restricted role can access the AI provider profile directly.';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'cti'
+          AND table_name = 'ai_provider_profile'
+          AND column_name ~ '(api_key|secret|token|password|credential)'
+    ) THEN
+        RAISE EXCEPTION 'The AI provider profile contains a forbidden credential column.';
+    END IF;
+
+    IF (SELECT count(*) FROM cti.dashboard_ai_provider_status) <> 1 THEN
+        RAISE EXCEPTION 'The dashboard AI provider status must return exactly one row.';
     END IF;
 
     IF has_table_privilege('cti_dashboard', 'cti.dashboard_articles', 'UPDATE') THEN

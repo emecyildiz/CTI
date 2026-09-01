@@ -216,6 +216,42 @@ CREATE TABLE IF NOT EXISTS cti.ai_usage (
 CREATE INDEX IF NOT EXISTS ix_ai_usage_requested_at
     ON cti.ai_usage (requested_at DESC);
 
+-- This table is intentionally non-secret. API credentials belong in the
+-- operator-selected credential backend (n8n in the bundled deployment).
+CREATE TABLE IF NOT EXISTS cti.ai_provider_profile (
+    profile_id smallint PRIMARY KEY DEFAULT 1 CHECK (profile_id = 1),
+    provider_key text NOT NULL CHECK (
+        char_length(provider_key) BETWEEN 2 AND 50
+        AND provider_key ~ '^[a-z0-9][a-z0-9_-]*$'
+    ),
+    provider_label text NOT NULL CHECK (
+        char_length(provider_label) BETWEEN 2 AND 80
+        AND provider_label !~ '[[:cntrl:]]'
+    ),
+    adapter_key text NOT NULL CHECK (
+        char_length(adapter_key) BETWEEN 2 AND 50
+        AND adapter_key ~ '^[a-z0-9][a-z0-9_-]*$'
+    ),
+    model_identifier text NOT NULL CHECK (
+        char_length(model_identifier) BETWEEN 1 AND 200
+        AND model_identifier !~ '[[:cntrl:]]'
+    ),
+    api_base_url text CHECK (
+        api_base_url IS NULL
+        OR (
+            char_length(api_base_url) BETWEEN 8 AND 500
+            AND api_base_url ~ '^https?://[^[:space:]]+$'
+            AND api_base_url !~ '[[:cntrl:]]'
+            AND api_base_url !~ '[@?#]'
+        )
+    ),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE cti.ai_provider_profile IS
+    'Non-secret AI provider metadata. API credentials must not be stored here.';
+
 CREATE OR REPLACE FUNCTION cti.claim_analysis_jobs(
     batch_size_value integer DEFAULT 1,
     daily_limit_value integer DEFAULT 20,
@@ -2628,15 +2664,37 @@ SELECT
     max(source.last_success_at) FILTER (WHERE source.enabled) AS last_source_success_at
 FROM cti.sources AS source;
 
+CREATE OR REPLACE VIEW cti.dashboard_ai_provider_status
+WITH (security_barrier = true)
+AS
+SELECT
+    profile.profile_id IS NOT NULL AS profile_defined,
+    profile.provider_key,
+    profile.provider_label,
+    profile.adapter_key,
+    profile.model_identifier,
+    profile.api_base_url,
+    CASE
+        WHEN profile.profile_id IS NULL THEN 'not_configured'
+        WHEN profile.adapter_key = 'google_gemini' THEN 'bundled'
+        ELSE 'manual_adapter_required'
+    END AS adapter_status,
+    profile.updated_at
+FROM (VALUES (1::smallint)) AS slot(profile_id)
+LEFT JOIN cti.ai_provider_profile AS profile
+    ON profile.profile_id = slot.profile_id;
+
 REVOKE ALL ON ALL TABLES IN SCHEMA cti FROM cti_dashboard;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA cti FROM cti_dashboard;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA cti FROM cti_dashboard;
 REVOKE TEMPORARY ON DATABASE cti FROM cti_dashboard;
+REVOKE ALL ON cti.ai_provider_profile FROM cti_n8n, cti_dashboard;
 
 GRANT CONNECT ON DATABASE cti TO cti_dashboard;
 GRANT USAGE ON SCHEMA cti TO cti_dashboard;
 GRANT SELECT ON cti.dashboard_articles, cti.dashboard_reports,
-    cti.dashboard_ai_usage, cti.dashboard_system_status TO cti_dashboard;
+    cti.dashboard_ai_usage, cti.dashboard_system_status,
+    cti.dashboard_ai_provider_status TO cti_dashboard;
 
 INSERT INTO cti.schema_versions (version)
 VALUES (1)
@@ -2927,4 +2985,8 @@ ON CONFLICT (version) DO NOTHING;
 
 INSERT INTO cti.schema_versions (version)
 VALUES (26)
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO cti.schema_versions (version)
+VALUES (27)
 ON CONFLICT (version) DO NOTHING;

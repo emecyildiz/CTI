@@ -110,9 +110,31 @@ app.MapGet("/setup", async (
         reader.GetInt64(4),
         reader.IsDBNull(5) ? null : reader.GetDateTime(5),
         authenticationMode);
+    await reader.CloseAsync();
+
+    await using var providerCommand = dataSource.CreateCommand("""
+        SELECT profile_defined, provider_key, provider_label, adapter_key,
+               model_identifier, api_base_url, adapter_status, updated_at
+        FROM cti.dashboard_ai_provider_status;
+        """);
+    await using var providerReader = await providerCommand.ExecuteReaderAsync(cancellationToken);
+    if (!await providerReader.ReadAsync(cancellationToken))
+    {
+        throw new InvalidOperationException("The CTI AI provider status is unavailable.");
+    }
+
+    var aiProvider = new AiProviderStatus(
+        providerReader.GetBoolean(0),
+        providerReader.IsDBNull(1) ? null : providerReader.GetString(1),
+        providerReader.IsDBNull(2) ? null : providerReader.GetString(2),
+        providerReader.IsDBNull(3) ? null : providerReader.GetString(3),
+        providerReader.IsDBNull(4) ? null : providerReader.GetString(4),
+        providerReader.IsDBNull(5) ? null : providerReader.GetString(5),
+        providerReader.GetString(6),
+        providerReader.IsDBNull(7) ? null : providerReader.GetDateTime(7));
 
     return Results.Content(
-        HtmlPages.Setup(status, GetAuthenticatedIdentity(context)),
+        HtmlPages.Setup(status, aiProvider, GetAuthenticatedIdentity(context)),
         "text/html; charset=utf-8");
 });
 
@@ -351,6 +373,11 @@ internal sealed record SetupSystemStatus(
     long CheckedSourceCount, long FailingSourceCount,
     DateTime? LastSourceSuccessAt, string AuthenticationMode);
 
+internal sealed record AiProviderStatus(
+    bool ProfileDefined, string? ProviderKey, string? ProviderLabel,
+    string? AdapterKey, string? ModelIdentifier, string? ApiBaseUrl,
+    string AdapterStatus, DateTime? UpdatedAt);
+
 internal static class HtmlPages
 {
     private static string E(string? value) => System.Net.WebUtility.HtmlEncode(value ?? string.Empty);
@@ -421,7 +448,10 @@ internal static class HtmlPages
             """);
     }
 
-    internal static string Setup(SetupSystemStatus status, string email)
+    internal static string Setup(
+        SetupSystemStatus status,
+        AiProviderStatus aiProvider,
+        string email)
     {
         var sourceHealthClass = status.FailingSourceCount > 0 ? "warning" : "ready";
         var sourceHealthLabel = status.FailingSourceCount > 0
@@ -435,13 +465,27 @@ internal static class HtmlPages
         var accessLabel = status.AuthenticationMode == "cloudflare"
             ? "Cloudflare Access"
             : "Local/private binding";
+        var providerLabel = aiProvider.ProfileDefined
+            ? aiProvider.ProviderLabel ?? aiProvider.ProviderKey ?? "Configured provider"
+            : "Not selected";
+        var modelLabel = aiProvider.ModelIdentifier ?? "Not selected";
+        var endpointLabel = aiProvider.ApiBaseUrl ?? "Provider default";
+        var adapterLabel = aiProvider.AdapterStatus switch
+        {
+            "bundled" => "Bundled adapter",
+            "manual_adapter_required" => "Manual adapter required",
+            _ => "Not configured"
+        };
+        var profileUpdated = aiProvider.UpdatedAt is null
+            ? "No saved profile"
+            : D(aiProvider.UpdatedAt.Value);
 
         return Layout("Guided setup", email, $$"""
             <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
-            <aside class="setup-notice"><strong>Read-only preview</strong><span>This package does not save settings, credentials, or workflow changes.</span></aside>
+            <aside class="setup-notice"><strong>Credential-safe preview</strong><span>The AI profile contains metadata only. API keys are neither accepted nor stored in the CTI database.</span></aside>
             <ol class="setup-steps" aria-label="Setup progress">
-              <li class="active"><span>01</span><strong>System check</strong><small>Available now</small></li>
-              <li><span>02</span><strong>AI provider</strong><small>Next package</small></li>
+              <li class="complete"><span>01</span><strong>System check</strong><small>Passed</small></li>
+              <li class="active"><span>02</span><strong>AI provider</strong><small>Profile model ready</small></li>
               <li><span>03</span><strong>Telegram &amp; sources</strong><small>Planned</small></li>
               <li><span>04</span><strong>Review &amp; activate</strong><small>Planned</small></li>
             </ol>
@@ -455,7 +499,26 @@ internal static class HtmlPages
                 <article><span>Access boundary</span><strong>{{E(accessLabel)}}</strong><small>The setup route uses the same protection as the dashboard.</small></article>
                 <article><span>Configuration writes</span><strong>Disabled</strong><small>No secrets or workflow state can be changed in this package.</small></article>
               </div>
-              <div class="setup-next"><div><strong>Next: AI provider</strong><p>A provider-neutral configuration model and protected credential handoff will be added as a separate package.</p></div><button type="button" disabled aria-disabled="true">Continue in next package</button></div>
+            </section>
+            <section class="setup-panel ai-panel">
+              <div class="setup-heading"><div><p class="eyebrow">STEP 02</p><h2>AI provider profile</h2></div><span class="check-state {{(aiProvider.ProfileDefined ? "ready" : "warning")}}">{{(aiProvider.ProfileDefined ? "Profile defined" : "Not configured")}}</span></div>
+              <div class="ai-profile-grid">
+                <article><span>Provider</span><strong>{{E(providerLabel)}}</strong><small>Stable key: {{E(aiProvider.ProviderKey ?? "—")}}</small></article>
+                <article><span>Model</span><strong>{{E(modelLabel)}}</strong><small>Stored as provider-neutral metadata.</small></article>
+                <article><span>API endpoint</span><strong>{{E(endpointLabel)}}</strong><small>Optional for compatible or private endpoints.</small></article>
+                <article><span>Workflow adapter</span><strong>{{E(adapterLabel)}}</strong><small>Adapter key: {{E(aiProvider.AdapterKey ?? "—")}}</small></article>
+                <article><span>Credential boundary</span><strong>External credential store</strong><small>API keys are intentionally excluded from this schema.</small></article>
+                <article><span>Profile updated</span><strong>{{E(profileUpdated)}}</strong><small>No workflow is activated by defining a profile.</small></article>
+              </div>
+              <div class="adapter-section">
+                <p class="eyebrow">ADAPTER TARGETS</p>
+                <div class="adapter-options">
+                  <article><strong>Google Gemini</strong><span class="check-state ready">Bundled</span><p>The included article-analysis and weekly-report workflows currently use the Gemini node.</p></article>
+                  <article><strong>OpenAI-compatible</strong><span class="check-state warning">Manual mapping</span><p>The profile can represent the provider and endpoint, but its n8n model node must be mapped before activation.</p></article>
+                  <article><strong>Custom provider</strong><span class="check-state warning">Manual mapping</span><p>The validated prompt and JSON contract can be reused after a compatible workflow adapter is supplied.</p></article>
+                </div>
+              </div>
+              <div class="setup-next"><div><strong>Next: protected credential handoff</strong><p>The following package will add validated profile writes and hand the API key to the credential backend without placing it in PostgreSQL.</p></div><button type="button" disabled aria-disabled="true">Credential handoff is next</button></div>
             </section>
             """);
     }
