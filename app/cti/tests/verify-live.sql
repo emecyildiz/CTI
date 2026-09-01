@@ -2,8 +2,8 @@
 
 DO $$
 BEGIN
-    IF COALESCE((SELECT max(version) FROM cti.schema_versions), 0) < 27 THEN
-        RAISE EXCEPTION 'CTI schema version 27 is not installed.';
+    IF COALESCE((SELECT max(version) FROM cti.schema_versions), 0) < 28 THEN
+        RAISE EXCEPTION 'CTI schema version 28 is not installed.';
     END IF;
 
     IF has_table_privilege('cti_n8n', 'cti.articles', 'DELETE') THEN
@@ -202,6 +202,18 @@ BEGIN
 
     IF (SELECT count(*) FROM cti.dashboard_ai_provider_status) <> 1 THEN
         RAISE EXCEPTION 'The dashboard AI provider status must return exactly one row.';
+    END IF;
+
+    IF NOT has_function_privilege(
+        'cti_dashboard',
+        'cti.configure_ai_provider_profile(text,text,text)',
+        'EXECUTE'
+    ) OR has_function_privilege(
+        'cti_n8n',
+        'cti.configure_ai_provider_profile(text,text,text)',
+        'EXECUTE'
+    ) THEN
+        RAISE EXCEPTION 'The AI provider profile write capability is assigned incorrectly.';
     END IF;
 
     IF has_table_privilege('cti_dashboard', 'cti.dashboard_articles', 'UPDATE') THEN

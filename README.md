@@ -52,7 +52,7 @@ sh ./scripts/install.sh
 ```
 
 Open `http://127.0.0.1:8080`. The dashboard intentionally listens only on localhost.
-The protected `/setup` page currently provides a read-only installation, source-health check, and provider-neutral AI profile status. AI profile metadata never contains an API key; credentials remain in the operator-selected credential backend. The page does not yet modify profiles, workflows, or activation state.
+The protected `/setup` page provides an installation and source-health check plus a provider-neutral AI profile. The CSRF-protected profile form stores only provider, adapter, model, and optional base-URL metadata. It never accepts an API key and does not modify credentials, workflows, or activation state.
 
 ### Connect n8n
 
@@ -102,7 +102,7 @@ docker compose exec -T cti-db \
 curl --fail http://127.0.0.1:8080/health/ready
 ```
 
-The schema version must be `27` or newer on the current main branch. Database upgrades are shipped as versioned migrations rather than by recreating the volume.
+The schema version must be `28` or newer on the current main branch. Database upgrades are shipped as versioned migrations rather than by recreating the volume.
 
 ## Data and AI behavior
 

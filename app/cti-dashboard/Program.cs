@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using Npgsql;
 
@@ -89,6 +90,7 @@ app.MapGet("/health/ready", async (NpgsqlDataSource dataSource, CancellationToke
 app.MapGet("/setup", async (
     HttpContext context,
     NpgsqlDataSource dataSource,
+    string? result,
     CancellationToken cancellationToken) =>
 {
     await using var command = dataSource.CreateCommand("""
@@ -132,10 +134,90 @@ app.MapGet("/setup", async (
         providerReader.IsDBNull(5) ? null : providerReader.GetString(5),
         providerReader.GetString(6),
         providerReader.IsDBNull(7) ? null : providerReader.GetDateTime(7));
+    var csrfToken = GetOrCreateSetupCsrfToken(context);
 
     return Results.Content(
-        HtmlPages.Setup(status, aiProvider, GetAuthenticatedIdentity(context)),
+        HtmlPages.Setup(
+            status,
+            aiProvider,
+            csrfToken,
+            string.Equals(result, "saved", StringComparison.Ordinal),
+            GetAuthenticatedIdentity(context)),
         "text/html; charset=utf-8");
+});
+
+app.MapPost("/setup/ai-profile", async (
+    HttpContext context,
+    NpgsqlDataSource dataSource,
+    CancellationToken cancellationToken) =>
+{
+    if (!context.Request.HasFormContentType)
+    {
+        return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+    }
+
+    if (context.Request.ContentLength is null or <= 0 or > 8192)
+    {
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+    }
+
+    var form = await context.Request.ReadFormAsync(cancellationToken);
+    if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var providerType = form["provider_type"].FirstOrDefault()?.Trim().ToLowerInvariant() ?? string.Empty;
+    if (providerType is not ("google_gemini" or "openai_compatible" or "custom"))
+    {
+        return Results.BadRequest("Unsupported AI provider type.");
+    }
+
+    var modelIdentifier = form["model_identifier"].FirstOrDefault()?.Trim() ?? string.Empty;
+    if (modelIdentifier.Length is < 1 or > 200 || modelIdentifier.Any(char.IsControl))
+    {
+        return Results.BadRequest("Invalid AI model identifier.");
+    }
+
+    var apiBaseUrl = form["api_base_url"].FirstOrDefault()?.Trim();
+    if (string.IsNullOrEmpty(apiBaseUrl))
+    {
+        apiBaseUrl = null;
+    }
+    else if (apiBaseUrl.Length > 500 ||
+             !Uri.TryCreate(apiBaseUrl, UriKind.Absolute, out var endpoint) ||
+             (!string.Equals(endpoint.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+              !string.Equals(endpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) ||
+             endpoint.UserInfo.Length > 0 ||
+             endpoint.Query.Length > 0 ||
+             endpoint.Fragment.Length > 0)
+    {
+        return Results.BadRequest("Invalid AI API base URL.");
+    }
+
+    await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+    await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+    await using (var writeMode = new NpgsqlCommand(
+                     "SET TRANSACTION READ WRITE;",
+                     connection,
+                     transaction))
+    {
+        await writeMode.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    await using (var command = new NpgsqlCommand(
+                     "SELECT cti.configure_ai_provider_profile(@provider, @model, @url);",
+                     connection,
+                     transaction))
+    {
+        command.Parameters.AddWithValue("provider", providerType);
+        command.Parameters.AddWithValue("model", modelIdentifier);
+        command.Parameters.AddWithValue("url", (object?)apiBaseUrl ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    await transaction.CommitAsync(cancellationToken);
+    return Results.Redirect("/setup?result=saved");
 });
 
 app.MapGet("/", async (
@@ -323,6 +405,52 @@ app.MapGet("/reports", async (
 
 app.Run();
 
+static string GetOrCreateSetupCsrfToken(HttpContext context)
+{
+    const string cookieName = "cti_setup_csrf";
+    var existing = context.Request.Cookies[cookieName];
+    if (IsValidSetupCsrfToken(existing)) return existing!;
+
+    var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+        .TrimEnd('=')
+        .Replace('+', '-')
+        .Replace('/', '_');
+    context.Response.Cookies.Append(cookieName, token, new CookieOptions
+    {
+        HttpOnly = true,
+        IsEssential = true,
+        SameSite = SameSiteMode.Strict,
+        Secure = context.Request.IsHttps,
+        Path = "/setup",
+        MaxAge = TimeSpan.FromMinutes(30)
+    });
+    return token;
+}
+
+static bool HasValidSetupCsrfToken(HttpContext context, IFormCollection form)
+{
+    var cookieToken = context.Request.Cookies["cti_setup_csrf"];
+    var formToken = form["_csrf"].FirstOrDefault();
+    if (!IsValidSetupCsrfToken(cookieToken) || !IsValidSetupCsrfToken(formToken)) return false;
+
+    return CryptographicOperations.FixedTimeEquals(
+        Encoding.ASCII.GetBytes(cookieToken!),
+        Encoding.ASCII.GetBytes(formToken!));
+}
+
+static bool IsValidSetupCsrfToken(string? token) =>
+    token is { Length: 43 } && token.All(character =>
+        char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
+
+static bool IsSameSetupOrigin(HttpRequest request)
+{
+    var origin = request.Headers.Origin.FirstOrDefault();
+    return Uri.TryCreate(origin, UriKind.Absolute, out var originUri) &&
+           string.Equals(originUri.Authority, request.Host.Value, StringComparison.OrdinalIgnoreCase) &&
+           (string.Equals(originUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(originUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
+}
+
 static string NormalizeFilter(string? value, int maxLength)
 {
     if (string.IsNullOrWhiteSpace(value)) return string.Empty;
@@ -451,6 +579,8 @@ internal static class HtmlPages
     internal static string Setup(
         SetupSystemStatus status,
         AiProviderStatus aiProvider,
+        string csrfToken,
+        bool profileSaved,
         string email)
     {
         var sourceHealthClass = status.FailingSourceCount > 0 ? "warning" : "ready";
@@ -479,10 +609,17 @@ internal static class HtmlPages
         var profileUpdated = aiProvider.UpdatedAt is null
             ? "No saved profile"
             : D(aiProvider.UpdatedAt.Value);
+        var selectedProvider = aiProvider.ProviderKey ?? "google_gemini";
+        var selectedModel = aiProvider.ModelIdentifier ?? "models/gemini-3.6-flash";
+        var selectedEndpoint = aiProvider.ApiBaseUrl ?? string.Empty;
+        var savedNotice = profileSaved
+            ? "<aside class=\"setup-result\"><strong>AI profile saved.</strong><span>No credential or workflow state was changed.</span></aside>"
+            : string.Empty;
 
         return Layout("Guided setup", email, $$"""
             <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
-            <aside class="setup-notice"><strong>Credential-safe preview</strong><span>The AI profile contains metadata only. API keys are neither accepted nor stored in the CTI database.</span></aside>
+            <aside class="setup-notice"><strong>Credential-safe profile</strong><span>This step saves metadata only. API keys are neither accepted nor stored in the CTI database.</span></aside>
+            {{savedNotice}}
             <ol class="setup-steps" aria-label="Setup progress">
               <li class="complete"><span>01</span><strong>System check</strong><small>Passed</small></li>
               <li class="active"><span>02</span><strong>AI provider</strong><small>Profile model ready</small></li>
@@ -497,7 +634,7 @@ internal static class HtmlPages
                 <article><span>Reviewed sources</span><strong>{{status.EnabledSourceCount}} enabled / {{status.TotalSourceCount}} defined</strong><small>{{status.CheckedSourceCount}} enabled sources have completed a successful check.</small></article>
                 <article><span>Source health</span><strong class="{{sourceHealthClass}}">{{E(sourceHealthLabel)}}</strong><small>Last successful collection: {{E(lastCollection)}}</small></article>
                 <article><span>Access boundary</span><strong>{{E(accessLabel)}}</strong><small>The setup route uses the same protection as the dashboard.</small></article>
-                <article><span>Configuration writes</span><strong>Disabled</strong><small>No secrets or workflow state can be changed in this package.</small></article>
+                <article><span>Configuration writes</span><strong>Profile metadata only</strong><small>No secrets or workflow state can be changed in this package.</small></article>
               </div>
             </section>
             <section class="setup-panel ai-panel">
@@ -510,6 +647,13 @@ internal static class HtmlPages
                 <article><span>Credential boundary</span><strong>External credential store</strong><small>API keys are intentionally excluded from this schema.</small></article>
                 <article><span>Profile updated</span><strong>{{E(profileUpdated)}}</strong><small>No workflow is activated by defining a profile.</small></article>
               </div>
+              <form class="ai-form" method="post" action="/setup/ai-profile">
+                <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
+                <label>Provider<select name="provider_type" required>{{Options(ProviderOptions, selectedProvider)}}</select></label>
+                <label>Model identifier<input name="model_identifier" value="{{E(selectedModel)}}" minlength="1" maxlength="200" required autocomplete="off"></label>
+                <label>API base URL (optional)<input type="url" name="api_base_url" value="{{E(selectedEndpoint)}}" maxlength="500" placeholder="https://api.example.com/v1" autocomplete="off"></label>
+                <div class="form-actions"><p>Saving updates only the non-secret provider profile. It does not test the API or alter n8n.</p><button type="submit">Save AI profile</button></div>
+              </form>
               <div class="adapter-section">
                 <p class="eyebrow">ADAPTER TARGETS</p>
                 <div class="adapter-options">
@@ -673,5 +817,12 @@ internal static class HtmlPages
     [
         ("", "All severities"), ("critical", "Critical"), ("high", "High"),
         ("medium", "Medium"), ("low", "Low"), ("unknown", "Unknown")
+    ];
+
+    private static readonly (string Value, string Label)[] ProviderOptions =
+    [
+        ("google_gemini", "Google Gemini — bundled adapter"),
+        ("openai_compatible", "OpenAI-compatible — manual mapping"),
+        ("custom", "Custom provider — manual mapping")
     ];
 }
