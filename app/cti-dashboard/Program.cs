@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -497,6 +498,124 @@ app.MapPost("/setup/postgres-workflow-mapping", async (
     };
 });
 
+app.MapPost("/setup/telegram-credential-handoff", async (
+    HttpContext context,
+    N8nHandoffProbe n8nProbe,
+    CancellationToken cancellationToken) =>
+{
+    if (!context.Request.HasFormContentType)
+    {
+        return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+    }
+
+    if (context.Request.ContentLength is null or <= 0 or > 8192)
+    {
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+    }
+
+    var form = await context.Request.ReadFormAsync(cancellationToken);
+    if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
+    var botToken = form["bot_token"].FirstOrDefault() ?? string.Empty;
+    if (!IsValidSecretInput(n8nApiKey, 20, 4096) ||
+        !IsValidTelegramBotToken(botToken))
+    {
+        return Results.BadRequest("Invalid credential input format.");
+    }
+
+    var handoff = await n8nProbe.UpsertTelegramCredentialAsync(
+        n8nApiKey,
+        botToken,
+        cancellationToken);
+
+    return handoff.Status switch
+    {
+        N8nCredentialHandoffStatus.Created =>
+            Results.Redirect("/setup?result=telegram_credential_created"),
+        N8nCredentialHandoffStatus.Updated =>
+            Results.Redirect("/setup?result=telegram_credential_updated"),
+        N8nCredentialHandoffStatus.AuthenticationFailed => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status401Unauthorized),
+        N8nCredentialHandoffStatus.Conflict => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status409Conflict),
+        N8nCredentialHandoffStatus.Unavailable => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status503ServiceUnavailable),
+        _ => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status502BadGateway)
+    };
+});
+
+app.MapPost("/setup/telegram-workflow-mapping", async (
+    HttpContext context,
+    N8nHandoffProbe n8nProbe,
+    CancellationToken cancellationToken) =>
+{
+    if (!context.Request.HasFormContentType)
+    {
+        return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+    }
+
+    if (context.Request.ContentLength is null or <= 0 or > 8192)
+    {
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+    }
+
+    var form = await context.Request.ReadFormAsync(cancellationToken);
+    if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
+    var authorizedChatId = form["authorized_chat_id"].FirstOrDefault() ?? string.Empty;
+    if (!IsValidSecretInput(n8nApiKey, 20, 4096) ||
+        !IsValidTelegramPrivateId(authorizedChatId))
+    {
+        return Results.BadRequest("Invalid Telegram mapping input format.");
+    }
+
+    var mapping = await n8nProbe.MapTelegramWorkflowsAsync(
+        n8nApiKey,
+        authorizedChatId,
+        cancellationToken);
+
+    return mapping.Status switch
+    {
+        N8nWorkflowMappingStatus.Mapped =>
+            Results.Redirect("/setup?result=telegram_workflows_mapped"),
+        N8nWorkflowMappingStatus.AlreadyMapped =>
+            Results.Redirect("/setup?result=telegram_workflows_already_mapped"),
+        N8nWorkflowMappingStatus.AuthenticationFailed => Results.Text(
+            mapping.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status401Unauthorized),
+        N8nWorkflowMappingStatus.Missing or N8nWorkflowMappingStatus.Conflict => Results.Text(
+            mapping.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status409Conflict),
+        N8nWorkflowMappingStatus.Unavailable => Results.Text(
+            mapping.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status503ServiceUnavailable),
+        _ => Results.Text(
+            mapping.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status502BadGateway)
+    };
+});
+
 app.MapGet("/", async (
     HttpContext context,
     NpgsqlDataSource dataSource,
@@ -726,6 +845,21 @@ static bool IsValidSecretInput(string value, int minimumLength, int maximumLengt
                            !char.IsControl(character) &&
                            !char.IsWhiteSpace(character));
 
+static bool IsValidTelegramBotToken(string value) =>
+    IsValidSecretInput(value, 26, 160) &&
+    Regex.IsMatch(
+        value,
+        @"^[0-9]{5,20}:[A-Za-z0-9_-]{20,128}$",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
+
+static bool IsValidTelegramPrivateId(string value) =>
+    Regex.IsMatch(
+        value,
+        @"^[0-9]{5,20}$",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
+
 static bool IsSameSetupOrigin(HttpRequest request)
 {
     var origin = request.Headers.Origin.FirstOrDefault();
@@ -830,20 +964,19 @@ internal sealed record N8nWorkflowMappingResult(
 
 internal sealed record N8nWorkflowTarget(
     string WorkflowName,
-    string NodeType,
     string CredentialType,
     string CredentialName,
-    IReadOnlyList<string> NodeNames);
+    IReadOnlyDictionary<string, string> NodeTypesByName);
 
 internal sealed record N8nPreparedWorkflow(
     string WorkflowId,
     string WorkflowName,
-    string NodeType,
     string CredentialType,
     string CredentialName,
-    IReadOnlyList<string> NodeNames,
+    IReadOnlyDictionary<string, string> NodeTypesByName,
     JsonObject Payload,
-    bool NeedsUpdate);
+    bool NeedsUpdate,
+    string? AuthorizedTelegramChatId = null);
 
 internal sealed class N8nWorkflowSafetyException(string message) : Exception(message);
 
@@ -856,7 +989,19 @@ internal sealed class N8nHandoffProbe : IDisposable
     private const string PostgresCredentialName = "CTI Self-Hosted - PostgreSQL";
     private const string PostgresCredentialType = "postgres";
     private const string PostgresNodeType = "n8n-nodes-base.postgres";
+    private const string TelegramCredentialName = "CTI Self-Hosted - Telegram";
+    private const string TelegramCredentialType = "telegramApi";
+    private const string TelegramNodeType = "n8n-nodes-base.telegram";
+    private const string TelegramTriggerNodeType = "n8n-nodes-base.telegramTrigger";
     private const int MaximumResponseBytes = 262144;
+    private static readonly Regex TelegramAllowedIdAssignment = new(
+        @"const allowedId = '(?:__CTI_TELEGRAM_ALLOWED_ID__|[0-9]{5,20})';",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
+    private static readonly Regex TelegramChatIdValue = new(
+        @"^(?:__CTI_TELEGRAM_CHAT_ID__|[0-9]{5,20})$",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
     private static readonly HashSet<string> WritableWorkflowSettings = new(StringComparer.Ordinal)
     {
         "saveExecutionProgress",
@@ -876,41 +1021,68 @@ internal sealed class N8nHandoffProbe : IDisposable
     };
     private static readonly N8nWorkflowTarget[] GeminiWorkflowTargets =
     [
-        new("CTI Article Analysis", GeminiNodeType, GeminiCredentialType,
-            GeminiCredentialName, ["Analyze With Gemini"]),
-        new("CTI Weekly Report", GeminiNodeType, GeminiCredentialType,
-            GeminiCredentialName, ["Generate Weekly Assessment"])
+        SingleTypeTarget("CTI Article Analysis", GeminiNodeType, GeminiCredentialType,
+            GeminiCredentialName, "Analyze With Gemini"),
+        SingleTypeTarget("CTI Weekly Report", GeminiNodeType, GeminiCredentialType,
+            GeminiCredentialName, "Generate Weekly Assessment")
     ];
     private static readonly N8nWorkflowTarget[] PostgresWorkflowTargets =
     [
-        new("CTI Article Analysis", PostgresNodeType, PostgresCredentialType,
+        SingleTypeTarget("CTI Article Analysis", PostgresNodeType, PostgresCredentialType,
             PostgresCredentialName,
-            ["Claim One Analysis Job", "Record Rule Triage", "Complete Analysis",
+            "Claim One Analysis Job", "Record Rule Triage", "Complete Analysis",
              "Defer Unsafe Claim", "Defer Fetch Failure", "Defer Extraction Failure",
              "Defer Invalid Content", "Defer Rule Triage Failure", "Defer Gemini Failure",
-             "Defer Invalid AI Output"]),
-        new("CTI Retention Maintenance", PostgresNodeType, PostgresCredentialType,
-            PostgresCredentialName, ["Apply Retention Policy"]),
-        new("CTI Source Collection", PostgresNodeType, PostgresCredentialType,
+             "Defer Invalid AI Output"),
+        SingleTypeTarget("CTI Retention Maintenance", PostgresNodeType, PostgresCredentialType,
+            PostgresCredentialName, "Apply Retention Policy"),
+        SingleTypeTarget("CTI Source Collection", PostgresNodeType, PostgresCredentialType,
             PostgresCredentialName,
-            ["Load Active Sources", "Start Source Check", "Store Recent Metadata",
+            "Load Active Sources", "Start Source Check", "Store Recent Metadata",
              "Record Source Success", "Record Rejected Feed Item",
-             "Record Source Read Failure", "Record Source Store Failure"]),
-        new("CTI Telegram Query", PostgresNodeType, PostgresCredentialType,
-            PostgresCredentialName, ["Lookup Recent CTI Articles"]),
-        new("CTI Vulnerability Enrichment", PostgresNodeType, PostgresCredentialType,
+             "Record Source Read Failure", "Record Source Store Failure"),
+        SingleTypeTarget("CTI Telegram Query", PostgresNodeType, PostgresCredentialType,
+            PostgresCredentialName, "Lookup Recent CTI Articles"),
+        SingleTypeTarget("CTI Vulnerability Enrichment", PostgresNodeType, PostgresCredentialType,
             PostgresCredentialName,
-            ["Store CISA KEV Catalog", "Select EPSS Lookup Batch", "Store FIRST EPSS Scores"]),
-        new("CTI Weekly Report", PostgresNodeType, PostgresCredentialType,
+            "Store CISA KEV Catalog", "Select EPSS Lookup Batch", "Store FIRST EPSS Scores"),
+        SingleTypeTarget("CTI Weekly Report", PostgresNodeType, PostgresCredentialType,
             PostgresCredentialName,
-            ["Claim Weekly Report", "Store Weekly Report", "Record Gemini Failure",
-             "Record Invalid Output"]),
-        new("CTI Weekly Telegram Delivery", PostgresNodeType, PostgresCredentialType,
+            "Claim Weekly Report", "Store Weekly Report", "Record Gemini Failure",
+             "Record Invalid Output"),
+        SingleTypeTarget("CTI Weekly Telegram Delivery", PostgresNodeType, PostgresCredentialType,
             PostgresCredentialName,
-            ["Claim Weekly Telegram Delivery", "Complete Telegram Delivery",
+            "Claim Weekly Telegram Delivery", "Complete Telegram Delivery",
              "Record Preparation Failure", "Record Ambiguous Send Failure",
-             "Record Invalid Receipt"])
+             "Record Invalid Receipt")
     ];
+    private static readonly N8nWorkflowTarget[] TelegramWorkflowTargets =
+    [
+        new("CTI Telegram Query", TelegramCredentialType, TelegramCredentialName,
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Private CTI Telegram Trigger"] = TelegramTriggerNodeType,
+                ["Answer Callback Query"] = TelegramNodeType,
+                ["Send Private CTI Response"] = TelegramNodeType
+            }),
+        SingleTypeTarget("CTI Weekly Telegram Delivery", TelegramNodeType,
+            TelegramCredentialType, TelegramCredentialName, "Send Weekly Report to Telegram"),
+        SingleTypeTarget("n8n Workflow Error Alerts", TelegramNodeType,
+            TelegramCredentialType, TelegramCredentialName, "Send a text message")
+    ];
+
+    private static N8nWorkflowTarget SingleTypeTarget(
+        string workflowName,
+        string nodeType,
+        string credentialType,
+        string credentialName,
+        params string[] nodeNames) =>
+        new(
+            workflowName,
+            credentialType,
+            credentialName,
+            nodeNames.ToDictionary(name => name, _ => nodeType, StringComparer.Ordinal));
+
     private readonly HttpClient client;
     private readonly Uri apiBaseUri;
     private readonly Uri healthUri;
@@ -997,6 +1169,22 @@ internal sealed class N8nHandoffProbe : IDisposable
                 ["port"] = 5432
             },
             "PostgreSQL",
+            cancellationToken);
+
+    internal async Task<N8nCredentialHandoffResult> UpsertTelegramCredentialAsync(
+        string n8nApiKey,
+        string botToken,
+        CancellationToken cancellationToken) =>
+        await UpsertCredentialAsync(
+            n8nApiKey,
+            TelegramCredentialName,
+            TelegramCredentialType,
+            new JsonObject
+            {
+                ["accessToken"] = botToken,
+                ["baseUrl"] = "https://api.telegram.org"
+            },
+            "Telegram",
             cancellationToken);
 
     private async Task<N8nCredentialHandoffResult> UpsertCredentialAsync(
@@ -1096,6 +1284,21 @@ internal sealed class N8nHandoffProbe : IDisposable
             "The reserved PostgreSQL credential was mapped to 31 nodes in seven disabled workflows.",
             cancellationToken);
 
+    internal async Task<N8nWorkflowMappingResult> MapTelegramWorkflowsAsync(
+        string n8nApiKey,
+        string authorizedChatId,
+        CancellationToken cancellationToken) =>
+        await MapCredentialWorkflowsAsync(
+            n8nApiKey,
+            TelegramCredentialName,
+            TelegramCredentialType,
+            TelegramWorkflowTargets,
+            "Create the reserved Telegram credential before mapping workflows.",
+            "All bundled Telegram nodes and authorized chat targets already use the configured values.",
+            "The Telegram credential and authorized private chat were mapped to five nodes in three disabled workflows.",
+            cancellationToken,
+            authorizedChatId);
+
     private async Task<N8nWorkflowMappingResult> MapCredentialWorkflowsAsync(
         string n8nApiKey,
         string credentialName,
@@ -1104,7 +1307,8 @@ internal sealed class N8nHandoffProbe : IDisposable
         string missingMessage,
         string alreadyMappedMessage,
         string mappedMessage,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? authorizedTelegramChatId = null)
     {
         await credentialLock.WaitAsync(cancellationToken);
         try
@@ -1138,10 +1342,18 @@ internal sealed class N8nHandoffProbe : IDisposable
                     return workflowLookup.Error;
                 }
 
-                preparedWorkflows.Add(PrepareWorkflowMapping(
+                var prepared = PrepareWorkflowMapping(
                     workflowLookup.Workflow!,
                     target,
-                    credentialLookup.CredentialId));
+                    credentialLookup.CredentialId);
+                if (authorizedTelegramChatId is not null)
+                {
+                    prepared = ApplyTelegramConfiguration(
+                        prepared,
+                        authorizedTelegramChatId);
+                }
+
+                preparedWorkflows.Add(prepared);
             }
 
             if (preparedWorkflows.All(workflow => !workflow.NeedsUpdate))
@@ -1307,20 +1519,19 @@ internal sealed class N8nHandoffProbe : IDisposable
             throw new JsonException("Workflow structure is incomplete.");
         }
 
+        var expectedNodeTypes = target.NodeTypesByName.Values.ToHashSet(StringComparer.Ordinal);
         var credentialNodes = nodes
             .OfType<JsonObject>()
-            .Where(node => string.Equals(
-                OptionalString(node, "type"),
-                target.NodeType,
-                StringComparison.Ordinal))
+            .Where(node => expectedNodeTypes.Contains(OptionalString(node, "type") ?? string.Empty))
             .ToList();
         var actualNodeNames = credentialNodes
             .Select(node => RequiredString(node, "name"))
             .ToList();
-        if (actualNodeNames.Count != target.NodeNames.Count ||
+        if (actualNodeNames.Count != target.NodeTypesByName.Count ||
             actualNodeNames.Distinct(StringComparer.Ordinal).Count() != actualNodeNames.Count ||
-            !actualNodeNames.Order(StringComparer.Ordinal)
-                .SequenceEqual(target.NodeNames.Order(StringComparer.Ordinal), StringComparer.Ordinal))
+            credentialNodes.Any(node =>
+                !target.NodeTypesByName.TryGetValue(RequiredString(node, "name"), out var expectedType) ||
+                !string.Equals(OptionalString(node, "type"), expectedType, StringComparison.Ordinal)))
         {
             throw new N8nWorkflowSafetyException(
                 $"Workflow '{target.WorkflowName}' does not contain exactly the expected credential nodes.");
@@ -1390,12 +1601,117 @@ internal sealed class N8nHandoffProbe : IDisposable
         return new N8nPreparedWorkflow(
             workflowId,
             workflowName,
-            target.NodeType,
             target.CredentialType,
             target.CredentialName,
-            target.NodeNames,
+            target.NodeTypesByName,
             payload,
             !alreadyMapped);
+    }
+
+    private static N8nPreparedWorkflow ApplyTelegramConfiguration(
+        N8nPreparedWorkflow workflow,
+        string authorizedChatId)
+    {
+        if (workflow.Payload["nodes"] is not JsonArray nodes)
+        {
+            throw new JsonException("Telegram workflow nodes are missing.");
+        }
+
+        var changed = workflow.WorkflowName switch
+        {
+            "CTI Telegram Query" => ConfigureTelegramAuthorization(nodes, authorizedChatId),
+            "CTI Weekly Telegram Delivery" => ConfigureTelegramChatTarget(
+                nodes,
+                "Send Weekly Report to Telegram",
+                authorizedChatId),
+            "n8n Workflow Error Alerts" => ConfigureTelegramChatTarget(
+                nodes,
+                "Send a text message",
+                authorizedChatId),
+            _ => throw new N8nWorkflowSafetyException(
+                $"Workflow '{workflow.WorkflowName}' is not an approved Telegram target.")
+        };
+
+        return workflow with
+        {
+            NeedsUpdate = workflow.NeedsUpdate || changed,
+            AuthorizedTelegramChatId = authorizedChatId
+        };
+    }
+
+    private static bool ConfigureTelegramAuthorization(
+        JsonArray nodes,
+        string authorizedChatId)
+    {
+        var node = RequiredWorkflowNode(
+            nodes,
+            "Authorize and Parse Request",
+            "n8n-nodes-base.code");
+        if (node["parameters"] is not JsonObject parameters)
+        {
+            throw new JsonException("Telegram authorization parameters are missing.");
+        }
+
+        var source = RequiredString(parameters, "jsCode");
+        var matches = TelegramAllowedIdAssignment.Matches(source);
+        if (matches.Count != 1)
+        {
+            throw new N8nWorkflowSafetyException(
+                "CTI Telegram Query does not contain the expected private-chat authorization guard.");
+        }
+
+        var replacement = $"const allowedId = '{authorizedChatId}';";
+        if (string.Equals(matches[0].Value, replacement, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        parameters["jsCode"] = TelegramAllowedIdAssignment.Replace(source, replacement, 1);
+        return true;
+    }
+
+    private static bool ConfigureTelegramChatTarget(
+        JsonArray nodes,
+        string nodeName,
+        string authorizedChatId)
+    {
+        var node = RequiredWorkflowNode(nodes, nodeName, TelegramNodeType);
+        if (node["parameters"] is not JsonObject parameters)
+        {
+            throw new JsonException("Telegram send parameters are missing.");
+        }
+
+        var currentChatId = RequiredString(parameters, "chatId");
+        if (!TelegramChatIdValue.IsMatch(currentChatId))
+        {
+            throw new N8nWorkflowSafetyException(
+                $"Telegram node '{nodeName}' contains an unexpected chat target.");
+        }
+
+        if (string.Equals(currentChatId, authorizedChatId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        parameters["chatId"] = authorizedChatId;
+        return true;
+    }
+
+    private static JsonObject RequiredWorkflowNode(
+        JsonArray nodes,
+        string nodeName,
+        string nodeType)
+    {
+        var matches = nodes.OfType<JsonObject>().Where(node =>
+            string.Equals(OptionalString(node, "name"), nodeName, StringComparison.Ordinal) &&
+            string.Equals(OptionalString(node, "type"), nodeType, StringComparison.Ordinal)).ToList();
+        if (matches.Count != 1)
+        {
+            throw new N8nWorkflowSafetyException(
+                $"Expected workflow node '{nodeName}' was not found exactly once.");
+        }
+
+        return matches[0];
     }
 
     private async Task<N8nWorkflowMappingResult?> UpdateWorkflowAsync(
@@ -1431,7 +1747,8 @@ internal sealed class N8nHandoffProbe : IDisposable
                 !RequiredBoolean(updatedWorkflow, "active", out var active) || active ||
                 !RequiredBoolean(updatedWorkflow, "isArchived", out var archived) || archived ||
                 updatedWorkflow["activeVersion"] is not null ||
-                !WorkflowNodesUseCredential(updatedWorkflow, workflow, credentialId))
+                !WorkflowNodesUseCredential(updatedWorkflow, workflow, credentialId) ||
+                !TelegramConfigurationMatches(updatedWorkflow, workflow))
             {
                 return new N8nWorkflowMappingResult(
                     N8nWorkflowMappingStatus.Rejected,
@@ -1456,13 +1773,15 @@ internal sealed class N8nHandoffProbe : IDisposable
             return false;
         }
 
+        var expectedNodeTypes = expected.NodeTypesByName.Values.ToHashSet(StringComparer.Ordinal);
         var matchingNodes = nodes.OfType<JsonObject>().Where(candidate =>
-            string.Equals(OptionalString(candidate, "type"), expected.NodeType, StringComparison.Ordinal)).ToList();
+            expectedNodeTypes.Contains(OptionalString(candidate, "type") ?? string.Empty)).ToList();
         var actualNames = matchingNodes.Select(node => RequiredString(node, "name")).ToList();
-        if (actualNames.Count != expected.NodeNames.Count ||
+        if (actualNames.Count != expected.NodeTypesByName.Count ||
             actualNames.Distinct(StringComparer.Ordinal).Count() != actualNames.Count ||
-            !actualNames.Order(StringComparer.Ordinal)
-                .SequenceEqual(expected.NodeNames.Order(StringComparer.Ordinal), StringComparer.Ordinal))
+            matchingNodes.Any(node =>
+                !expected.NodeTypesByName.TryGetValue(RequiredString(node, "name"), out var expectedType) ||
+                !string.Equals(OptionalString(node, "type"), expectedType, StringComparison.Ordinal)))
         {
             return false;
         }
@@ -1474,6 +1793,49 @@ internal sealed class N8nHandoffProbe : IDisposable
                    string.Equals(OptionalString(credential, "id"), credentialId, StringComparison.Ordinal) &&
                    string.Equals(OptionalString(credential, "name"), expected.CredentialName, StringComparison.Ordinal);
         });
+    }
+
+    private static bool TelegramConfigurationMatches(
+        JsonObject workflow,
+        N8nPreparedWorkflow expected)
+    {
+        var chatId = expected.AuthorizedTelegramChatId;
+        if (chatId is null)
+        {
+            return true;
+        }
+
+        if (workflow["nodes"] is not JsonArray nodes)
+        {
+            return false;
+        }
+
+        if (string.Equals(expected.WorkflowName, "CTI Telegram Query", StringComparison.Ordinal))
+        {
+            var node = RequiredWorkflowNode(
+                nodes,
+                "Authorize and Parse Request",
+                "n8n-nodes-base.code");
+            if (node["parameters"] is not JsonObject parameters)
+            {
+                return false;
+            }
+
+            var source = OptionalString(parameters, "jsCode") ?? string.Empty;
+            var matches = TelegramAllowedIdAssignment.Matches(source);
+            return matches.Count == 1 &&
+                   string.Equals(matches[0].Value, $"const allowedId = '{chatId}';", StringComparison.Ordinal);
+        }
+
+        var targetNodeName = string.Equals(
+            expected.WorkflowName,
+            "CTI Weekly Telegram Delivery",
+            StringComparison.Ordinal)
+            ? "Send Weekly Report to Telegram"
+            : "Send a text message";
+        var targetNode = RequiredWorkflowNode(nodes, targetNodeName, TelegramNodeType);
+        return targetNode["parameters"] is JsonObject sendParameters &&
+               string.Equals(OptionalString(sendParameters, "chatId"), chatId, StringComparison.Ordinal);
     }
 
     private static N8nWorkflowMappingResult? WorkflowApiError(
@@ -1919,6 +2281,10 @@ internal static class HtmlPages
             "postgres_credential_updated" => "<aside class=\"setup-result\"><strong>PostgreSQL credential updated in n8n.</strong><span>The existing reserved CTI credential was reused.</span></aside>",
             "postgres_workflows_mapped" => "<aside class=\"setup-result\"><strong>PostgreSQL workflow mapping completed.</strong><span>Thirty-one database nodes in seven workflow drafts were updated and remained disabled.</span></aside>",
             "postgres_workflows_already_mapped" => "<aside class=\"setup-result\"><strong>PostgreSQL workflows were already mapped.</strong><span>No workflow write or activation was performed.</span></aside>",
+            "telegram_credential_created" => "<aside class=\"setup-result\"><strong>Telegram credential created in n8n.</strong><span>The bot token was not stored in the dashboard database or returned to the page.</span></aside>",
+            "telegram_credential_updated" => "<aside class=\"setup-result\"><strong>Telegram credential updated in n8n.</strong><span>The existing reserved CTI credential was reused.</span></aside>",
+            "telegram_workflows_mapped" => "<aside class=\"setup-result\"><strong>Telegram workflow mapping completed.</strong><span>Five Telegram nodes and the private-chat authorization guard were configured in three disabled workflows.</span></aside>",
+            "telegram_workflows_already_mapped" => "<aside class=\"setup-result\"><strong>Telegram workflows were already mapped.</strong><span>No workflow write or activation was performed.</span></aside>",
             _ => string.Empty
         };
         var handoffReady = n8nStatus.HealthReady &&
@@ -1966,6 +2332,26 @@ internal static class HtmlPages
                 </form>
                 """
             : "<div class=\"credential-unavailable\"><strong>Database workflow mapping is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
+        var telegramCredentialForm = handoffReady
+            ? $$"""
+                <form class="credential-form" method="post" action="/setup/telegram-credential-handoff" autocomplete="off">
+                  <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
+                  <label>n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+                  <label>Telegram bot token<input type="password" name="bot_token" minlength="26" maxlength="160" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+                  <div class="credential-guidance"><p>Obtain the token from BotFather. It is written directly to n8n's encrypted credential store under the reserved CTI name.</p><button type="submit">Create or update Telegram credential</button></div>
+                </form>
+                """
+            : "<div class=\"credential-unavailable\"><strong>Telegram credential input is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
+        var telegramMappingForm = handoffReady
+            ? $$"""
+                <form class="credential-form workflow-mapping-form" method="post" action="/setup/telegram-workflow-mapping" autocomplete="off">
+                  <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
+                  <label>n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+                  <label>Authorized private Telegram user/chat ID<input inputmode="numeric" pattern="[0-9]{5,20}" name="authorized_chat_id" minlength="5" maxlength="20" required autocomplete="off" spellcheck="false"></label>
+                  <div class="credential-guidance"><p>The query bot accepts only a direct private chat where the sender ID and chat ID both equal this value. The same destination receives weekly reports and workflow-error alerts.</p><button type="submit">Configure Telegram workflow drafts</button></div>
+                </form>
+                """
+            : "<div class=\"credential-unavailable\"><strong>Telegram workflow mapping is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
 
         return Layout("Guided setup", email, $$"""
             <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
@@ -2039,7 +2425,19 @@ internal static class HtmlPages
                 <div class="setup-heading"><div><p class="eyebrow">DATABASE WORKFLOW MAPPING</p><h3>Bundled workflow drafts</h3></div></div>
                 {{postgresMappingForm}}
               </div>
-              <div class="setup-next"><div><strong>Next: optional Telegram credentials</strong><p>Telegram bot handoff, chat authorization review, and mapping remain separate from the required database setup.</p></div><button type="button" disabled aria-disabled="true">Telegram is next</button></div>
+            </section>
+            <section class="setup-panel telegram-panel">
+              <div class="setup-heading"><div><p class="eyebrow">STEP 03 · OPTIONAL</p><h2>Private Telegram delivery</h2></div><span class="check-state warning">Disabled by default</span></div>
+              <p class="section-intro">Telegram remains optional. The public exports contain no personal chat identifier, and the query workflow authorizes one direct private user/chat before activation.</p>
+              <div class="handoff-section database-handoff-section">
+                <div class="setup-heading"><div><p class="eyebrow">TELEGRAM CREDENTIAL HANDOFF</p><h3>Operator-owned bot token</h3></div></div>
+                {{telegramCredentialForm}}
+              </div>
+              <div class="workflow-mapping-section">
+                <div class="setup-heading"><div><p class="eyebrow">PRIVATE CHAT AUTHORIZATION</p><h3>Three bundled workflow drafts</h3></div></div>
+                {{telegramMappingForm}}
+              </div>
+              <div class="setup-next"><div><strong>Next: review and controlled activation</strong><p>Credentials and targets must be reviewed in n8n before workflows are activated one at a time.</p></div><button type="button" disabled aria-disabled="true">Activation review is next</button></div>
             </section>
             """);
     }

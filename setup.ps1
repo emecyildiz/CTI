@@ -152,7 +152,7 @@ Write-Host "`nCTI Self-Hosted is running." -ForegroundColor Green
 Write-Host "Dashboard: http://127.0.0.1:${dashboardPort}"
 if ($managedN8n) {
     Write-Host "n8n:       http://127.0.0.1:${n8nPort}"
-    Write-Host "`nCreate the first local n8n owner account, then map the CTI PostgreSQL and optional AI/Telegram credentials. Imported workflows remain disabled until you activate them."
+    Write-Host "`nCreate the first local n8n owner account, then use the protected dashboard setup page to map CTI credentials. Imported workflows remain disabled until you activate them."
 } else {
     Write-Host "`nThe CTI database/dashboard are ready. Follow N8N-SETUP.md to connect and import into your existing n8n instance."
 }

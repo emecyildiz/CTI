@@ -30,7 +30,7 @@ The guided installer:
 5. waits for service health checks;
 6. imports all CTI workflows in a disabled state and avoids duplicate imports.
 
-The user still creates the first local n8n owner account. The protected setup page can then create and map the operator-owned PostgreSQL and bundled Gemini credentials; optional Telegram credentials remain manual. Workflows are never activated automatically.
+The user still creates the first local n8n owner account. The protected setup page can then create and map the operator-owned PostgreSQL, bundled Gemini, and optional Telegram credentials. Workflows are never activated automatically.
 
 Published GitHub releases contain a versioned ZIP, SHA-256 checksum, and JSON manifest. The release pipeline is triggered only by a matching version tag, validates the package, and builds the downloadable archive automatically.
 
@@ -61,6 +61,8 @@ For the bundled Gemini adapter, the one-time handoff form accepts an n8n API key
 The separate workflow-mapping action binds that reserved credential only to the expected Gemini nodes in `CTI Article Analysis` and `CTI Weekly Report`. It refuses missing or duplicate workflow names, unexpected Gemini-node layouts, archived workflows, and active or published workflows. A successful mapping updates draft workflow data only; it never calls the n8n activation API.
 
 The PostgreSQL handoff follows the same boundary. The user supplies the generated `CTI_APP_PASSWORD` once; the dashboard creates or updates `CTI Self-Hosted - PostgreSQL` for the restricted `cti_n8n` role at `cti-db:5432`. A separate guarded action maps it to exactly 31 expected database nodes across seven bundled workflows. Neither action stores the password in the CTI schema, and mapping refuses any unexpected workflow structure or active/published target.
+
+Optional Telegram setup creates the reserved `CTI Self-Hosted - Telegram` credential directly in n8n, then maps it to exactly five expected nodes in three disabled workflows. The operator supplies one numeric private user/chat ID: the query workflow requires both sender and chat IDs to match it, while weekly delivery and workflow-error alerts use the same destination. Public exports contain placeholders rather than a personal Telegram identifier.
 
 ### Connect n8n
 

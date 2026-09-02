@@ -42,13 +42,15 @@ Feed collection, dashboard filtering, Telegram queries, retention, KEV synchroni
 
 ## Telegram credential (optional)
 
-Assign a Telegram bot credential only if these optional workflows will be used:
+The protected dashboard `/setup` page can create the bot credential, insert one authorized private user/chat ID, and map all expected Telegram nodes without activating a workflow. Public exports contain no personal chat identifier.
+
+Use Telegram only if these optional workflows are needed:
 
 - `CTI Telegram Query`
 - `CTI Weekly Telegram Delivery`
 - `n8n Workflow Error Alerts`
 
-Review the permitted chat/user identifiers before activation. Never publish the private query bot without an authorization check.
+Review the configured private user/chat ID before activation. The query workflow requires both sender ID and private chat ID to match this value; group chats are intentionally excluded. Never publish the query bot without this authorization guard.
 
 ## Activation order
 

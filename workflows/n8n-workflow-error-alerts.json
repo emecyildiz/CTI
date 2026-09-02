@@ -30,7 +30,7 @@
     },
     {
       "parameters": {
-        "chatId": "6552428480",
+        "chatId": "__CTI_TELEGRAM_CHAT_ID__",
         "text": "={{ $json.message }}",
         "additionalFields": {}
       },

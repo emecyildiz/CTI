@@ -67,4 +67,4 @@ dashboard_port=$(sed -n 's/^CTI_DASHBOARD_PORT=//p' .env | head -n 1)
 n8n_port=$(sed -n 's/^N8N_PORT=//p' .env | head -n 1)
 printf 'Dashboard: http://127.0.0.1:%s\n' "${dashboard_port:-8080}"
 printf 'n8n:       http://127.0.0.1:%s\n' "${n8n_port:-5678}"
-printf 'Create the first n8n owner account, then map PostgreSQL and optional AI/Telegram credentials.\n'
+printf 'Create the first n8n owner account, then use the protected dashboard setup page to map CTI credentials.\n'
