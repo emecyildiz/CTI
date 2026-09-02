@@ -27,7 +27,8 @@ builder.Services.AddSingleton<NpgsqlDataSource>(_ =>
     return dataSourceBuilder.Build();
 });
 builder.Services.AddSingleton(_ => new N8nHandoffProbe(
-    builder.Configuration["CTI_N8N_API_URL"] ?? "http://cti-n8n:5678/api/v1"));
+    builder.Configuration["CTI_N8N_API_URL"] ?? "http://cti-n8n:5678/api/v1",
+    builder.Configuration["CtiDatabase:Name"] ?? "cti"));
 
 var app = builder.Build();
 var environment = app.Environment;
@@ -381,6 +382,121 @@ app.MapPost("/setup/workflow-mapping", async (
     };
 });
 
+app.MapPost("/setup/postgres-credential-handoff", async (
+    HttpContext context,
+    N8nHandoffProbe n8nProbe,
+    CancellationToken cancellationToken) =>
+{
+    if (!context.Request.HasFormContentType)
+    {
+        return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+    }
+
+    if (context.Request.ContentLength is null or <= 0 or > 8192)
+    {
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+    }
+
+    var form = await context.Request.ReadFormAsync(cancellationToken);
+    if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
+    var databasePassword = form["database_password"].FirstOrDefault() ?? string.Empty;
+    if (!IsValidSecretInput(n8nApiKey, 20, 4096) ||
+        !IsValidSecretInput(databasePassword, 16, 512))
+    {
+        return Results.BadRequest("Invalid credential input format.");
+    }
+
+    var handoff = await n8nProbe.UpsertPostgresCredentialAsync(
+        n8nApiKey,
+        databasePassword,
+        cancellationToken);
+
+    return handoff.Status switch
+    {
+        N8nCredentialHandoffStatus.Created =>
+            Results.Redirect("/setup?result=postgres_credential_created"),
+        N8nCredentialHandoffStatus.Updated =>
+            Results.Redirect("/setup?result=postgres_credential_updated"),
+        N8nCredentialHandoffStatus.AuthenticationFailed => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status401Unauthorized),
+        N8nCredentialHandoffStatus.Conflict => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status409Conflict),
+        N8nCredentialHandoffStatus.Unavailable => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status503ServiceUnavailable),
+        _ => Results.Text(
+            handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status502BadGateway)
+    };
+});
+
+app.MapPost("/setup/postgres-workflow-mapping", async (
+    HttpContext context,
+    N8nHandoffProbe n8nProbe,
+    CancellationToken cancellationToken) =>
+{
+    if (!context.Request.HasFormContentType)
+    {
+        return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+    }
+
+    if (context.Request.ContentLength is null or <= 0 or > 8192)
+    {
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+    }
+
+    var form = await context.Request.ReadFormAsync(cancellationToken);
+    if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
+    if (!IsValidSecretInput(n8nApiKey, 20, 4096))
+    {
+        return Results.BadRequest("Invalid n8n API key format.");
+    }
+
+    var mapping = await n8nProbe.MapPostgresWorkflowsAsync(
+        n8nApiKey,
+        cancellationToken);
+
+    return mapping.Status switch
+    {
+        N8nWorkflowMappingStatus.Mapped =>
+            Results.Redirect("/setup?result=postgres_workflows_mapped"),
+        N8nWorkflowMappingStatus.AlreadyMapped =>
+            Results.Redirect("/setup?result=postgres_workflows_already_mapped"),
+        N8nWorkflowMappingStatus.AuthenticationFailed => Results.Text(
+            mapping.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status401Unauthorized),
+        N8nWorkflowMappingStatus.Missing or N8nWorkflowMappingStatus.Conflict => Results.Text(
+            mapping.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status409Conflict),
+        N8nWorkflowMappingStatus.Unavailable => Results.Text(
+            mapping.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status503ServiceUnavailable),
+        _ => Results.Text(
+            mapping.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status502BadGateway)
+    };
+});
+
 app.MapGet("/", async (
     HttpContext context,
     NpgsqlDataSource dataSource,
@@ -712,12 +828,20 @@ internal sealed record N8nWorkflowMappingResult(
     N8nWorkflowMappingStatus Status,
     string Message);
 
-internal sealed record N8nWorkflowTarget(string WorkflowName, string NodeName);
+internal sealed record N8nWorkflowTarget(
+    string WorkflowName,
+    string NodeType,
+    string CredentialType,
+    string CredentialName,
+    IReadOnlyList<string> NodeNames);
 
 internal sealed record N8nPreparedWorkflow(
     string WorkflowId,
     string WorkflowName,
-    string NodeName,
+    string NodeType,
+    string CredentialType,
+    string CredentialName,
+    IReadOnlyList<string> NodeNames,
     JsonObject Payload,
     bool NeedsUpdate);
 
@@ -725,10 +849,13 @@ internal sealed class N8nWorkflowSafetyException(string message) : Exception(mes
 
 internal sealed class N8nHandoffProbe : IDisposable
 {
-    private const string CredentialName = "CTI Self-Hosted - Google Gemini";
-    private const string CredentialType = "googlePalmApi";
+    private const string GeminiCredentialName = "CTI Self-Hosted - Google Gemini";
+    private const string GeminiCredentialType = "googlePalmApi";
     private const string GeminiHost = "https://generativelanguage.googleapis.com";
     private const string GeminiNodeType = "@n8n/n8n-nodes-langchain.googleGemini";
+    private const string PostgresCredentialName = "CTI Self-Hosted - PostgreSQL";
+    private const string PostgresCredentialType = "postgres";
+    private const string PostgresNodeType = "n8n-nodes-base.postgres";
     private const int MaximumResponseBytes = 262144;
     private static readonly HashSet<string> WritableWorkflowSettings = new(StringComparer.Ordinal)
     {
@@ -747,18 +874,51 @@ internal sealed class N8nHandoffProbe : IDisposable
         "availableInMCP",
         "customTelemetryTags"
     };
-    private static readonly N8nWorkflowTarget[] WorkflowTargets =
+    private static readonly N8nWorkflowTarget[] GeminiWorkflowTargets =
     [
-        new("CTI Article Analysis", "Analyze With Gemini"),
-        new("CTI Weekly Report", "Generate Weekly Assessment")
+        new("CTI Article Analysis", GeminiNodeType, GeminiCredentialType,
+            GeminiCredentialName, ["Analyze With Gemini"]),
+        new("CTI Weekly Report", GeminiNodeType, GeminiCredentialType,
+            GeminiCredentialName, ["Generate Weekly Assessment"])
+    ];
+    private static readonly N8nWorkflowTarget[] PostgresWorkflowTargets =
+    [
+        new("CTI Article Analysis", PostgresNodeType, PostgresCredentialType,
+            PostgresCredentialName,
+            ["Claim One Analysis Job", "Record Rule Triage", "Complete Analysis",
+             "Defer Unsafe Claim", "Defer Fetch Failure", "Defer Extraction Failure",
+             "Defer Invalid Content", "Defer Rule Triage Failure", "Defer Gemini Failure",
+             "Defer Invalid AI Output"]),
+        new("CTI Retention Maintenance", PostgresNodeType, PostgresCredentialType,
+            PostgresCredentialName, ["Apply Retention Policy"]),
+        new("CTI Source Collection", PostgresNodeType, PostgresCredentialType,
+            PostgresCredentialName,
+            ["Load Active Sources", "Start Source Check", "Store Recent Metadata",
+             "Record Source Success", "Record Rejected Feed Item",
+             "Record Source Read Failure", "Record Source Store Failure"]),
+        new("CTI Telegram Query", PostgresNodeType, PostgresCredentialType,
+            PostgresCredentialName, ["Lookup Recent CTI Articles"]),
+        new("CTI Vulnerability Enrichment", PostgresNodeType, PostgresCredentialType,
+            PostgresCredentialName,
+            ["Store CISA KEV Catalog", "Select EPSS Lookup Batch", "Store FIRST EPSS Scores"]),
+        new("CTI Weekly Report", PostgresNodeType, PostgresCredentialType,
+            PostgresCredentialName,
+            ["Claim Weekly Report", "Store Weekly Report", "Record Gemini Failure",
+             "Record Invalid Output"]),
+        new("CTI Weekly Telegram Delivery", PostgresNodeType, PostgresCredentialType,
+            PostgresCredentialName,
+            ["Claim Weekly Telegram Delivery", "Complete Telegram Delivery",
+             "Record Preparation Failure", "Record Ambiguous Send Failure",
+             "Record Invalid Receipt"])
     ];
     private readonly HttpClient client;
     private readonly Uri apiBaseUri;
     private readonly Uri healthUri;
     private readonly Uri credentialSchemaUri;
+    private readonly string ctiDatabaseName;
     private readonly SemaphoreSlim credentialLock = new(1, 1);
 
-    internal N8nHandoffProbe(string configuredApiUrl)
+    internal N8nHandoffProbe(string configuredApiUrl, string configuredDatabaseName = "cti")
     {
         if (!Uri.TryCreate(configuredApiUrl.TrimEnd('/') + "/", UriKind.Absolute, out var apiUri) ||
             (!string.Equals(apiUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
@@ -773,6 +933,15 @@ internal sealed class N8nHandoffProbe : IDisposable
         }
 
         ApiBaseUrl = apiUri.AbsoluteUri.TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(configuredDatabaseName) ||
+            configuredDatabaseName.Length > 63 ||
+            !configuredDatabaseName.All(character =>
+                char.IsAsciiLetterOrDigit(character) || character is '_' or '-'))
+        {
+            throw new InvalidOperationException("The configured CTI database name is invalid.");
+        }
+
+        ctiDatabaseName = configuredDatabaseName;
         apiBaseUri = apiUri;
         credentialSchemaUri = new Uri(apiUri, "credentials/schema/googlePalmApi");
         var apiPath = apiUri.AbsolutePath.TrimEnd('/');
@@ -795,12 +964,57 @@ internal sealed class N8nHandoffProbe : IDisposable
     internal async Task<N8nCredentialHandoffResult> UpsertGoogleGeminiCredentialAsync(
         string n8nApiKey,
         string geminiApiKey,
+        CancellationToken cancellationToken) =>
+        await UpsertCredentialAsync(
+            n8nApiKey,
+            GeminiCredentialName,
+            GeminiCredentialType,
+            new JsonObject
+            {
+                ["host"] = GeminiHost,
+                ["apiKey"] = geminiApiKey
+            },
+            "Gemini",
+            cancellationToken);
+
+    internal async Task<N8nCredentialHandoffResult> UpsertPostgresCredentialAsync(
+        string n8nApiKey,
+        string databasePassword,
+        CancellationToken cancellationToken) =>
+        await UpsertCredentialAsync(
+            n8nApiKey,
+            PostgresCredentialName,
+            PostgresCredentialType,
+            new JsonObject
+            {
+                ["host"] = "cti-db",
+                ["database"] = ctiDatabaseName,
+                ["user"] = "cti_n8n",
+                ["password"] = databasePassword,
+                ["maxConnections"] = 10,
+                ["allowUnauthorizedCerts"] = false,
+                ["ssl"] = "disable",
+                ["port"] = 5432
+            },
+            "PostgreSQL",
+            cancellationToken);
+
+    private async Task<N8nCredentialHandoffResult> UpsertCredentialAsync(
+        string n8nApiKey,
+        string credentialName,
+        string credentialType,
+        JsonObject credentialData,
+        string credentialLabel,
         CancellationToken cancellationToken)
     {
         await credentialLock.WaitAsync(cancellationToken);
         try
         {
-            var lookup = await FindManagedCredentialAsync(n8nApiKey, cancellationToken);
+            var lookup = await FindManagedCredentialAsync(
+                n8nApiKey,
+                credentialName,
+                credentialType,
+                cancellationToken);
             if (lookup.Error is not null)
             {
                 return lookup.Error;
@@ -812,7 +1026,10 @@ internal sealed class N8nHandoffProbe : IDisposable
                     HttpMethod.Patch,
                     new Uri(apiBaseUri, $"credentials/{Uri.EscapeDataString(lookup.CredentialId)}"),
                     n8nApiKey,
-                    geminiApiKey,
+                    credentialName,
+                    credentialType,
+                    credentialData,
+                    credentialLabel,
                     N8nCredentialHandoffStatus.Updated,
                     cancellationToken);
                 if (updated.Status != N8nCredentialHandoffStatus.Missing)
@@ -825,7 +1042,10 @@ internal sealed class N8nHandoffProbe : IDisposable
                 HttpMethod.Post,
                 new Uri(apiBaseUri, "credentials"),
                 n8nApiKey,
-                geminiApiKey,
+                credentialName,
+                credentialType,
+                credentialData,
+                credentialLabel,
                 N8nCredentialHandoffStatus.Created,
                 cancellationToken);
         }
@@ -852,12 +1072,48 @@ internal sealed class N8nHandoffProbe : IDisposable
 
     internal async Task<N8nWorkflowMappingResult> MapGoogleGeminiWorkflowsAsync(
         string n8nApiKey,
+        CancellationToken cancellationToken) =>
+        await MapCredentialWorkflowsAsync(
+            n8nApiKey,
+            GeminiCredentialName,
+            GeminiCredentialType,
+            GeminiWorkflowTargets,
+            "Create the reserved Google Gemini credential before mapping workflows.",
+            "The bundled Gemini workflow nodes already use the reserved credential.",
+            "The reserved Gemini credential was mapped to two disabled bundled workflows.",
+            cancellationToken);
+
+    internal async Task<N8nWorkflowMappingResult> MapPostgresWorkflowsAsync(
+        string n8nApiKey,
+        CancellationToken cancellationToken) =>
+        await MapCredentialWorkflowsAsync(
+            n8nApiKey,
+            PostgresCredentialName,
+            PostgresCredentialType,
+            PostgresWorkflowTargets,
+            "Create the reserved PostgreSQL credential before mapping workflows.",
+            "All bundled PostgreSQL nodes already use the reserved credential.",
+            "The reserved PostgreSQL credential was mapped to 31 nodes in seven disabled workflows.",
+            cancellationToken);
+
+    private async Task<N8nWorkflowMappingResult> MapCredentialWorkflowsAsync(
+        string n8nApiKey,
+        string credentialName,
+        string credentialType,
+        IReadOnlyList<N8nWorkflowTarget> workflowTargets,
+        string missingMessage,
+        string alreadyMappedMessage,
+        string mappedMessage,
         CancellationToken cancellationToken)
     {
         await credentialLock.WaitAsync(cancellationToken);
         try
         {
-            var credentialLookup = await FindManagedCredentialAsync(n8nApiKey, cancellationToken);
+            var credentialLookup = await FindManagedCredentialAsync(
+                n8nApiKey,
+                credentialName,
+                credentialType,
+                cancellationToken);
             if (credentialLookup.Error is not null)
             {
                 return ConvertCredentialError(credentialLookup.Error);
@@ -867,11 +1123,11 @@ internal sealed class N8nHandoffProbe : IDisposable
             {
                 return new N8nWorkflowMappingResult(
                     N8nWorkflowMappingStatus.Missing,
-                    "Create the reserved Google Gemini credential before mapping workflows.");
+                    missingMessage);
             }
 
-            var preparedWorkflows = new List<N8nPreparedWorkflow>(WorkflowTargets.Length);
-            foreach (var target in WorkflowTargets)
+            var preparedWorkflows = new List<N8nPreparedWorkflow>(workflowTargets.Count);
+            foreach (var target in workflowTargets)
             {
                 var workflowLookup = await FindWorkflowByNameAsync(
                     target,
@@ -892,7 +1148,7 @@ internal sealed class N8nHandoffProbe : IDisposable
             {
                 return new N8nWorkflowMappingResult(
                     N8nWorkflowMappingStatus.AlreadyMapped,
-                    "The bundled Gemini workflow nodes already use the reserved credential.");
+                    alreadyMappedMessage);
             }
 
             foreach (var workflow in preparedWorkflows.Where(workflow => workflow.NeedsUpdate))
@@ -910,7 +1166,7 @@ internal sealed class N8nHandoffProbe : IDisposable
 
             return new N8nWorkflowMappingResult(
                 N8nWorkflowMappingStatus.Mapped,
-                "The reserved Gemini credential was mapped to two disabled bundled workflows.");
+                mappedMessage);
         }
         catch (N8nWorkflowSafetyException exception)
         {
@@ -1051,45 +1307,53 @@ internal sealed class N8nHandoffProbe : IDisposable
             throw new JsonException("Workflow structure is incomplete.");
         }
 
-        var geminiNodes = nodes
+        var credentialNodes = nodes
             .OfType<JsonObject>()
             .Where(node => string.Equals(
                 OptionalString(node, "type"),
-                GeminiNodeType,
+                target.NodeType,
                 StringComparison.Ordinal))
             .ToList();
-        if (geminiNodes.Count != 1 ||
-            !string.Equals(OptionalString(geminiNodes[0], "name"), target.NodeName, StringComparison.Ordinal))
+        var actualNodeNames = credentialNodes
+            .Select(node => RequiredString(node, "name"))
+            .ToList();
+        if (actualNodeNames.Count != target.NodeNames.Count ||
+            actualNodeNames.Distinct(StringComparer.Ordinal).Count() != actualNodeNames.Count ||
+            !actualNodeNames.Order(StringComparer.Ordinal)
+                .SequenceEqual(target.NodeNames.Order(StringComparer.Ordinal), StringComparer.Ordinal))
         {
             throw new N8nWorkflowSafetyException(
-                $"Workflow '{target.WorkflowName}' does not contain exactly the expected Gemini node.");
+                $"Workflow '{target.WorkflowName}' does not contain exactly the expected credential nodes.");
         }
 
-        var node = geminiNodes[0];
-        JsonObject credentials;
-        if (node["credentials"] is null)
+        var alreadyMapped = true;
+        foreach (var node in credentialNodes)
         {
-            credentials = new JsonObject();
-            node["credentials"] = credentials;
-        }
-        else if (node["credentials"] is JsonObject existingCredentials)
-        {
-            credentials = existingCredentials;
-        }
-        else
-        {
-            throw new JsonException("Gemini node credentials are not an object.");
-        }
+            JsonObject credentials;
+            if (node["credentials"] is null)
+            {
+                credentials = new JsonObject();
+                node["credentials"] = credentials;
+            }
+            else if (node["credentials"] is JsonObject existingCredentials)
+            {
+                credentials = existingCredentials;
+            }
+            else
+            {
+                throw new JsonException("Workflow node credentials are not an object.");
+            }
 
-        var existingGemini = credentials[CredentialType] as JsonObject;
-        var alreadyMapped = existingGemini is not null &&
-                            string.Equals(OptionalString(existingGemini, "id"), credentialId, StringComparison.Ordinal) &&
-                            string.Equals(OptionalString(existingGemini, "name"), CredentialName, StringComparison.Ordinal);
-        credentials[CredentialType] = new JsonObject
-        {
-            ["id"] = credentialId,
-            ["name"] = CredentialName
-        };
+            var existingCredential = credentials[target.CredentialType] as JsonObject;
+            alreadyMapped &= existingCredential is not null &&
+                             string.Equals(OptionalString(existingCredential, "id"), credentialId, StringComparison.Ordinal) &&
+                             string.Equals(OptionalString(existingCredential, "name"), target.CredentialName, StringComparison.Ordinal);
+            credentials[target.CredentialType] = new JsonObject
+            {
+                ["id"] = credentialId,
+                ["name"] = target.CredentialName
+            };
+        }
 
         var payload = new JsonObject();
         foreach (var property in new[]
@@ -1126,7 +1390,10 @@ internal sealed class N8nHandoffProbe : IDisposable
         return new N8nPreparedWorkflow(
             workflowId,
             workflowName,
-            target.NodeName,
+            target.NodeType,
+            target.CredentialType,
+            target.CredentialName,
+            target.NodeNames,
             payload,
             !alreadyMapped);
     }
@@ -1162,8 +1429,9 @@ internal sealed class N8nHandoffProbe : IDisposable
                 !string.Equals(RequiredString(updatedWorkflow, "id"), workflow.WorkflowId, StringComparison.Ordinal) ||
                 !string.Equals(RequiredString(updatedWorkflow, "name"), workflow.WorkflowName, StringComparison.Ordinal) ||
                 !RequiredBoolean(updatedWorkflow, "active", out var active) || active ||
+                !RequiredBoolean(updatedWorkflow, "isArchived", out var archived) || archived ||
                 updatedWorkflow["activeVersion"] is not null ||
-                !WorkflowNodeUsesCredential(updatedWorkflow, workflow.NodeName, credentialId))
+                !WorkflowNodesUseCredential(updatedWorkflow, workflow, credentialId))
             {
                 return new N8nWorkflowMappingResult(
                     N8nWorkflowMappingStatus.Rejected,
@@ -1178,9 +1446,9 @@ internal sealed class N8nHandoffProbe : IDisposable
         }
     }
 
-    private static bool WorkflowNodeUsesCredential(
+    private static bool WorkflowNodesUseCredential(
         JsonObject workflow,
-        string nodeName,
+        N8nPreparedWorkflow expected,
         string credentialId)
     {
         if (workflow["nodes"] is not JsonArray nodes)
@@ -1189,18 +1457,23 @@ internal sealed class N8nHandoffProbe : IDisposable
         }
 
         var matchingNodes = nodes.OfType<JsonObject>().Where(candidate =>
-            string.Equals(OptionalString(candidate, "name"), nodeName, StringComparison.Ordinal) &&
-            string.Equals(OptionalString(candidate, "type"), GeminiNodeType, StringComparison.Ordinal)).ToList();
-        if (matchingNodes.Count != 1)
+            string.Equals(OptionalString(candidate, "type"), expected.NodeType, StringComparison.Ordinal)).ToList();
+        var actualNames = matchingNodes.Select(node => RequiredString(node, "name")).ToList();
+        if (actualNames.Count != expected.NodeNames.Count ||
+            actualNames.Distinct(StringComparer.Ordinal).Count() != actualNames.Count ||
+            !actualNames.Order(StringComparer.Ordinal)
+                .SequenceEqual(expected.NodeNames.Order(StringComparer.Ordinal), StringComparer.Ordinal))
         {
             return false;
         }
 
-        var node = matchingNodes[0];
-        var credential = node?["credentials"]?[CredentialType] as JsonObject;
-        return credential is not null &&
-               string.Equals(OptionalString(credential, "id"), credentialId, StringComparison.Ordinal) &&
-               string.Equals(OptionalString(credential, "name"), CredentialName, StringComparison.Ordinal);
+        return matchingNodes.All(node =>
+        {
+            var credential = node["credentials"]?[expected.CredentialType] as JsonObject;
+            return credential is not null &&
+                   string.Equals(OptionalString(credential, "id"), credentialId, StringComparison.Ordinal) &&
+                   string.Equals(OptionalString(credential, "name"), expected.CredentialName, StringComparison.Ordinal);
+        });
     }
 
     private static N8nWorkflowMappingResult? WorkflowApiError(
@@ -1264,7 +1537,11 @@ internal sealed class N8nHandoffProbe : IDisposable
     }
 
     private async Task<(string? CredentialId, N8nCredentialHandoffResult? Error)>
-        FindManagedCredentialAsync(string n8nApiKey, CancellationToken cancellationToken)
+        FindManagedCredentialAsync(
+            string n8nApiKey,
+            string credentialName,
+            string credentialType,
+            CancellationToken cancellationToken)
     {
         string? cursor = null;
         string? matchedId = null;
@@ -1307,13 +1584,13 @@ internal sealed class N8nHandoffProbe : IDisposable
             foreach (var credential in credentials.EnumerateArray())
             {
                 if (!credential.TryGetProperty("name", out var nameElement) ||
-                    !string.Equals(nameElement.GetString(), CredentialName, StringComparison.Ordinal))
+                    !string.Equals(nameElement.GetString(), credentialName, StringComparison.Ordinal))
                 {
                     continue;
                 }
 
                 if (!credential.TryGetProperty("type", out var typeElement) ||
-                    !string.Equals(typeElement.GetString(), CredentialType, StringComparison.Ordinal) ||
+                    !string.Equals(typeElement.GetString(), credentialType, StringComparison.Ordinal) ||
                     !credential.TryGetProperty("id", out var idElement) ||
                     !IsSafeCredentialId(idElement.GetString()))
                 {
@@ -1351,27 +1628,25 @@ internal sealed class N8nHandoffProbe : IDisposable
         HttpMethod method,
         Uri endpoint,
         string n8nApiKey,
-        string geminiApiKey,
+        string credentialName,
+        string credentialType,
+        JsonObject credentialData,
+        string credentialLabel,
         N8nCredentialHandoffStatus successStatus,
         CancellationToken cancellationToken)
     {
-        var credentialData = new
-        {
-            host = GeminiHost,
-            apiKey = geminiApiKey
-        };
         var payload = method == HttpMethod.Patch
             ? JsonSerializer.SerializeToUtf8Bytes(new
             {
-                name = CredentialName,
-                type = CredentialType,
+                name = credentialName,
+                type = credentialType,
                 data = credentialData,
                 isPartialData = false
             })
             : JsonSerializer.SerializeToUtf8Bytes(new
             {
-                name = CredentialName,
-                type = CredentialType,
+                name = credentialName,
+                type = credentialType,
                 data = credentialData
             });
 
@@ -1411,9 +1686,9 @@ internal sealed class N8nHandoffProbe : IDisposable
             if (!document.RootElement.TryGetProperty("id", out var idElement) ||
                 !IsSafeCredentialId(idElement.GetString()) ||
                 !document.RootElement.TryGetProperty("name", out var nameElement) ||
-                !string.Equals(nameElement.GetString(), CredentialName, StringComparison.Ordinal) ||
+                !string.Equals(nameElement.GetString(), credentialName, StringComparison.Ordinal) ||
                 !document.RootElement.TryGetProperty("type", out var typeElement) ||
-                !string.Equals(typeElement.GetString(), CredentialType, StringComparison.Ordinal))
+                !string.Equals(typeElement.GetString(), credentialType, StringComparison.Ordinal))
             {
                 throw new JsonException("Credential response identity did not match the request.");
             }
@@ -1421,8 +1696,8 @@ internal sealed class N8nHandoffProbe : IDisposable
             return new N8nCredentialHandoffResult(
                 successStatus,
                 successStatus == N8nCredentialHandoffStatus.Created
-                    ? "Gemini credential created in n8n."
-                    : "Gemini credential updated in n8n.");
+                    ? $"{credentialLabel} credential created in n8n."
+                    : $"{credentialLabel} credential updated in n8n.");
         }
         finally
         {
@@ -1640,6 +1915,10 @@ internal static class HtmlPages
             "credential_updated" => "<aside class=\"setup-result\"><strong>Gemini credential updated in n8n.</strong><span>The existing reserved CTI credential was reused.</span></aside>",
             "workflows_mapped" => "<aside class=\"setup-result\"><strong>Gemini workflow mapping completed.</strong><span>Two bundled workflow drafts were updated and remained disabled.</span></aside>",
             "workflows_already_mapped" => "<aside class=\"setup-result\"><strong>Gemini workflows were already mapped.</strong><span>No workflow write or activation was performed.</span></aside>",
+            "postgres_credential_created" => "<aside class=\"setup-result\"><strong>PostgreSQL credential created in n8n.</strong><span>The database password was not stored in the dashboard database or returned to the page.</span></aside>",
+            "postgres_credential_updated" => "<aside class=\"setup-result\"><strong>PostgreSQL credential updated in n8n.</strong><span>The existing reserved CTI credential was reused.</span></aside>",
+            "postgres_workflows_mapped" => "<aside class=\"setup-result\"><strong>PostgreSQL workflow mapping completed.</strong><span>Thirty-one database nodes in seven workflow drafts were updated and remained disabled.</span></aside>",
+            "postgres_workflows_already_mapped" => "<aside class=\"setup-result\"><strong>PostgreSQL workflows were already mapped.</strong><span>No workflow write or activation was performed.</span></aside>",
             _ => string.Empty
         };
         var handoffReady = n8nStatus.HealthReady &&
@@ -1668,6 +1947,25 @@ internal static class HtmlPages
                 </form>
                 """
             : "<div class=\"credential-unavailable\"><strong>Workflow mapping is locked.</strong><p>Complete the Gemini profile and n8n boundary check first.</p></div>";
+        var postgresCredentialForm = handoffReady
+            ? $$"""
+                <form class="credential-form" method="post" action="/setup/postgres-credential-handoff" autocomplete="off">
+                  <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
+                  <label>n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+                  <label>CTI application database password<input type="password" name="database_password" minlength="16" maxlength="512" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+                  <div class="credential-guidance"><p>Use <code>CTI_APP_PASSWORD</code> from the private <code>.env</code> file. The credential is fixed to <code>cti_n8n@cti-db:5432</code> with SSL disabled inside the private Docker network.</p><button type="submit">Create or update PostgreSQL credential</button></div>
+                </form>
+                """
+            : "<div class=\"credential-unavailable\"><strong>Database credential input is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
+        var postgresMappingForm = handoffReady
+            ? $$"""
+                <form class="credential-form workflow-mapping-form" method="post" action="/setup/postgres-workflow-mapping" autocomplete="off">
+                  <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
+                  <label>n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+                  <div class="credential-guidance"><p>Mapping is limited to 31 expected PostgreSQL nodes in seven bundled workflows. Every target workflow must remain disabled, unpublished, unarchived, and structurally unchanged.</p><button type="submit">Map PostgreSQL workflow drafts</button></div>
+                </form>
+                """
+            : "<div class=\"credential-unavailable\"><strong>Database workflow mapping is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
 
         return Layout("Guided setup", email, $$"""
             <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
@@ -1729,7 +2027,19 @@ internal static class HtmlPages
                 <div class="setup-heading"><div><p class="eyebrow">WORKFLOW CREDENTIAL MAPPING</p><h3>Gemini workflow drafts</h3></div><span class="check-state warning">Manual confirmation</span></div>
                 {{workflowMappingForm}}
               </div>
-              <div class="setup-next"><div><strong>Next: data-source and messaging credentials</strong><p>PostgreSQL and optional Telegram credentials still need their own guarded handoff and workflow mapping before review and activation.</p></div><button type="button" disabled aria-disabled="true">Additional credentials are next</button></div>
+            </section>
+            <section class="setup-panel database-panel">
+              <div class="setup-heading"><div><p class="eyebrow">STEP 03</p><h2>PostgreSQL workflow access</h2></div><span class="check-state warning">Manual confirmation</span></div>
+              <p class="section-intro">The generated application-role password is handed directly to n8n. The database owner and dashboard roles are never used by workflow nodes.</p>
+              <div class="handoff-section database-handoff-section">
+                <div class="setup-heading"><div><p class="eyebrow">DATABASE CREDENTIAL HANDOFF</p><h3>Restricted CTI application role</h3></div></div>
+                {{postgresCredentialForm}}
+              </div>
+              <div class="workflow-mapping-section">
+                <div class="setup-heading"><div><p class="eyebrow">DATABASE WORKFLOW MAPPING</p><h3>Bundled workflow drafts</h3></div></div>
+                {{postgresMappingForm}}
+              </div>
+              <div class="setup-next"><div><strong>Next: optional Telegram credentials</strong><p>Telegram bot handoff, chat authorization review, and mapping remain separate from the required database setup.</p></div><button type="button" disabled aria-disabled="true">Telegram is next</button></div>
             </section>
             """);
     }

@@ -15,6 +15,8 @@ The script verifies Docker, n8n 2.x, password separation, and the CTI network. I
 
 ## PostgreSQL credential
 
+The protected dashboard `/setup` page can create this credential and map it to all expected PostgreSQL nodes without activating a workflow. The following values remain available for a manual installation or review:
+
 Create one PostgreSQL credential in n8n and assign it to every PostgreSQL node:
 
 - Name: `CTI PostgreSQL`
