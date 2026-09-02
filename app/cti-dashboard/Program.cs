@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -300,6 +301,81 @@ app.MapPost("/setup/credential-handoff", async (
             statusCode: StatusCodes.Status503ServiceUnavailable),
         _ => Results.Text(
             handoff.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status502BadGateway)
+    };
+});
+
+app.MapPost("/setup/workflow-mapping", async (
+    HttpContext context,
+    NpgsqlDataSource dataSource,
+    N8nHandoffProbe n8nProbe,
+    CancellationToken cancellationToken) =>
+{
+    if (!context.Request.HasFormContentType)
+    {
+        return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+    }
+
+    if (context.Request.ContentLength is null or <= 0 or > 8192)
+    {
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+    }
+
+    var form = await context.Request.ReadFormAsync(cancellationToken);
+    if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    await using (var command = dataSource.CreateCommand("""
+                     SELECT profile_defined, provider_key, adapter_key
+                     FROM cti.dashboard_ai_provider_status;
+                     """))
+    await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+    {
+        if (!await reader.ReadAsync(cancellationToken) ||
+            !reader.GetBoolean(0) ||
+            !string.Equals(reader.GetString(1), "google_gemini", StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(2), "google_gemini", StringComparison.Ordinal))
+        {
+            return Results.Text(
+                "Save the bundled Google Gemini profile before mapping workflows.",
+                "text/plain; charset=utf-8",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
+    if (!IsValidSecretInput(n8nApiKey, 20, 4096))
+    {
+        return Results.BadRequest("Invalid n8n API key format.");
+    }
+
+    var mapping = await n8nProbe.MapGoogleGeminiWorkflowsAsync(
+        n8nApiKey,
+        cancellationToken);
+
+    return mapping.Status switch
+    {
+        N8nWorkflowMappingStatus.Mapped =>
+            Results.Redirect("/setup?result=workflows_mapped"),
+        N8nWorkflowMappingStatus.AlreadyMapped =>
+            Results.Redirect("/setup?result=workflows_already_mapped"),
+        N8nWorkflowMappingStatus.AuthenticationFailed => Results.Text(
+            mapping.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status401Unauthorized),
+        N8nWorkflowMappingStatus.Missing or N8nWorkflowMappingStatus.Conflict => Results.Text(
+            mapping.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status409Conflict),
+        N8nWorkflowMappingStatus.Unavailable => Results.Text(
+            mapping.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status503ServiceUnavailable),
+        _ => Results.Text(
+            mapping.Message,
             "text/plain; charset=utf-8",
             statusCode: StatusCodes.Status502BadGateway)
     };
@@ -621,12 +697,61 @@ internal sealed record N8nCredentialHandoffResult(
     N8nCredentialHandoffStatus Status,
     string Message);
 
+internal enum N8nWorkflowMappingStatus
+{
+    Mapped,
+    AlreadyMapped,
+    AuthenticationFailed,
+    Missing,
+    Conflict,
+    Rejected,
+    Unavailable
+}
+
+internal sealed record N8nWorkflowMappingResult(
+    N8nWorkflowMappingStatus Status,
+    string Message);
+
+internal sealed record N8nWorkflowTarget(string WorkflowName, string NodeName);
+
+internal sealed record N8nPreparedWorkflow(
+    string WorkflowId,
+    string WorkflowName,
+    string NodeName,
+    JsonObject Payload,
+    bool NeedsUpdate);
+
+internal sealed class N8nWorkflowSafetyException(string message) : Exception(message);
+
 internal sealed class N8nHandoffProbe : IDisposable
 {
     private const string CredentialName = "CTI Self-Hosted - Google Gemini";
     private const string CredentialType = "googlePalmApi";
     private const string GeminiHost = "https://generativelanguage.googleapis.com";
+    private const string GeminiNodeType = "@n8n/n8n-nodes-langchain.googleGemini";
     private const int MaximumResponseBytes = 262144;
+    private static readonly HashSet<string> WritableWorkflowSettings = new(StringComparer.Ordinal)
+    {
+        "saveExecutionProgress",
+        "saveManualExecutions",
+        "saveDataErrorExecution",
+        "saveDataSuccessExecution",
+        "executionTimeout",
+        "errorWorkflow",
+        "timezone",
+        "executionOrder",
+        "callerPolicy",
+        "callerIds",
+        "timeSavedPerExecution",
+        "redactionPolicy",
+        "availableInMCP",
+        "customTelemetryTags"
+    };
+    private static readonly N8nWorkflowTarget[] WorkflowTargets =
+    [
+        new("CTI Article Analysis", "Analyze With Gemini"),
+        new("CTI Weekly Report", "Generate Weekly Assessment")
+    ];
     private readonly HttpClient client;
     private readonly Uri apiBaseUri;
     private readonly Uri healthUri;
@@ -723,6 +848,419 @@ internal sealed class N8nHandoffProbe : IDisposable
         {
             credentialLock.Release();
         }
+    }
+
+    internal async Task<N8nWorkflowMappingResult> MapGoogleGeminiWorkflowsAsync(
+        string n8nApiKey,
+        CancellationToken cancellationToken)
+    {
+        await credentialLock.WaitAsync(cancellationToken);
+        try
+        {
+            var credentialLookup = await FindManagedCredentialAsync(n8nApiKey, cancellationToken);
+            if (credentialLookup.Error is not null)
+            {
+                return ConvertCredentialError(credentialLookup.Error);
+            }
+
+            if (credentialLookup.CredentialId is null)
+            {
+                return new N8nWorkflowMappingResult(
+                    N8nWorkflowMappingStatus.Missing,
+                    "Create the reserved Google Gemini credential before mapping workflows.");
+            }
+
+            var preparedWorkflows = new List<N8nPreparedWorkflow>(WorkflowTargets.Length);
+            foreach (var target in WorkflowTargets)
+            {
+                var workflowLookup = await FindWorkflowByNameAsync(
+                    target,
+                    n8nApiKey,
+                    cancellationToken);
+                if (workflowLookup.Error is not null)
+                {
+                    return workflowLookup.Error;
+                }
+
+                preparedWorkflows.Add(PrepareWorkflowMapping(
+                    workflowLookup.Workflow!,
+                    target,
+                    credentialLookup.CredentialId));
+            }
+
+            if (preparedWorkflows.All(workflow => !workflow.NeedsUpdate))
+            {
+                return new N8nWorkflowMappingResult(
+                    N8nWorkflowMappingStatus.AlreadyMapped,
+                    "The bundled Gemini workflow nodes already use the reserved credential.");
+            }
+
+            foreach (var workflow in preparedWorkflows.Where(workflow => workflow.NeedsUpdate))
+            {
+                var updateResult = await UpdateWorkflowAsync(
+                    workflow,
+                    credentialLookup.CredentialId,
+                    n8nApiKey,
+                    cancellationToken);
+                if (updateResult is not null)
+                {
+                    return updateResult;
+                }
+            }
+
+            return new N8nWorkflowMappingResult(
+                N8nWorkflowMappingStatus.Mapped,
+                "The reserved Gemini credential was mapped to two disabled bundled workflows.");
+        }
+        catch (N8nWorkflowSafetyException exception)
+        {
+            return new N8nWorkflowMappingResult(
+                N8nWorkflowMappingStatus.Conflict,
+                exception.Message);
+        }
+        catch (Exception exception) when (
+            (exception is HttpRequestException ||
+             exception is TaskCanceledException ||
+             exception is JsonException ||
+             exception is InvalidDataException) &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            return exception is HttpRequestException or TaskCanceledException
+                ? new N8nWorkflowMappingResult(
+                    N8nWorkflowMappingStatus.Unavailable,
+                    "n8n could not be reached while mapping workflows.")
+                : new N8nWorkflowMappingResult(
+                    N8nWorkflowMappingStatus.Rejected,
+                    "n8n returned an invalid workflow response.");
+        }
+        finally
+        {
+            credentialLock.Release();
+        }
+    }
+
+    private async Task<(JsonObject? Workflow, N8nWorkflowMappingResult? Error)>
+        FindWorkflowByNameAsync(
+            N8nWorkflowTarget target,
+            string n8nApiKey,
+            CancellationToken cancellationToken)
+    {
+        var listUri = new Uri(
+            apiBaseUri,
+            $"workflows?name={Uri.EscapeDataString(target.WorkflowName)}&limit=100&excludePinnedData=true");
+        using var listRequest = CreateAuthorizedRequest(HttpMethod.Get, listUri, n8nApiKey);
+        using var listResponse = await client.SendAsync(
+            listRequest,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        var listError = WorkflowApiError(listResponse, "workflow:list");
+        if (listError is not null)
+        {
+            return (null, listError);
+        }
+
+        var listPayload = await ReadLimitedContentAsync(listResponse.Content, cancellationToken);
+        using var listDocument = JsonDocument.Parse(listPayload);
+        if (!listDocument.RootElement.TryGetProperty("data", out var workflows) ||
+            workflows.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException("Workflow list does not contain a data array.");
+        }
+
+        var workflowIds = new List<string>();
+        foreach (var workflow in workflows.EnumerateArray())
+        {
+            if (!workflow.TryGetProperty("name", out var nameElement) ||
+                !string.Equals(nameElement.GetString(), target.WorkflowName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!workflow.TryGetProperty("id", out var idElement) ||
+                !IsSafeCredentialId(idElement.GetString()))
+            {
+                throw new JsonException("Workflow identity is invalid.");
+            }
+
+            workflowIds.Add(idElement.GetString()!);
+        }
+
+        if (workflowIds.Count == 0)
+        {
+            return (null, new N8nWorkflowMappingResult(
+                N8nWorkflowMappingStatus.Missing,
+                $"The bundled workflow '{target.WorkflowName}' was not found in n8n."));
+        }
+
+        if (workflowIds.Count > 1)
+        {
+            return (null, new N8nWorkflowMappingResult(
+                N8nWorkflowMappingStatus.Conflict,
+                $"Multiple n8n workflows use the reserved name '{target.WorkflowName}'."));
+        }
+
+        using var getRequest = CreateAuthorizedRequest(
+            HttpMethod.Get,
+            new Uri(apiBaseUri, $"workflows/{Uri.EscapeDataString(workflowIds[0])}?excludePinnedData=true"),
+            n8nApiKey);
+        using var getResponse = await client.SendAsync(
+            getRequest,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        var getError = WorkflowApiError(getResponse, "workflow:read");
+        if (getError is not null)
+        {
+            return (null, getError);
+        }
+
+        var workflowPayload = await ReadLimitedContentAsync(getResponse.Content, cancellationToken);
+        var workflowObject = JsonNode.Parse(workflowPayload) as JsonObject;
+        if (workflowObject is null)
+        {
+            throw new JsonException("Workflow response is not an object.");
+        }
+
+        return (workflowObject, null);
+    }
+
+    private static N8nPreparedWorkflow PrepareWorkflowMapping(
+        JsonObject workflow,
+        N8nWorkflowTarget target,
+        string credentialId)
+    {
+        var workflowId = RequiredString(workflow, "id");
+        var workflowName = RequiredString(workflow, "name");
+        if (!IsSafeCredentialId(workflowId) ||
+            !string.Equals(workflowName, target.WorkflowName, StringComparison.Ordinal))
+        {
+            throw new JsonException("Workflow identity did not match the mapping target.");
+        }
+
+        if (!RequiredBoolean(workflow, "active", out var active) || active ||
+            !RequiredBoolean(workflow, "isArchived", out var archived) || archived ||
+            workflow["activeVersion"] is not null)
+        {
+            throw new N8nWorkflowSafetyException(
+                $"Workflow '{target.WorkflowName}' must be disabled, unpublished, and unarchived before mapping.");
+        }
+
+        if (workflow["nodes"] is not JsonArray nodes ||
+            workflow["connections"] is not JsonObject ||
+            workflow["settings"] is not JsonObject settings)
+        {
+            throw new JsonException("Workflow structure is incomplete.");
+        }
+
+        var geminiNodes = nodes
+            .OfType<JsonObject>()
+            .Where(node => string.Equals(
+                OptionalString(node, "type"),
+                GeminiNodeType,
+                StringComparison.Ordinal))
+            .ToList();
+        if (geminiNodes.Count != 1 ||
+            !string.Equals(OptionalString(geminiNodes[0], "name"), target.NodeName, StringComparison.Ordinal))
+        {
+            throw new N8nWorkflowSafetyException(
+                $"Workflow '{target.WorkflowName}' does not contain exactly the expected Gemini node.");
+        }
+
+        var node = geminiNodes[0];
+        JsonObject credentials;
+        if (node["credentials"] is null)
+        {
+            credentials = new JsonObject();
+            node["credentials"] = credentials;
+        }
+        else if (node["credentials"] is JsonObject existingCredentials)
+        {
+            credentials = existingCredentials;
+        }
+        else
+        {
+            throw new JsonException("Gemini node credentials are not an object.");
+        }
+
+        var existingGemini = credentials[CredentialType] as JsonObject;
+        var alreadyMapped = existingGemini is not null &&
+                            string.Equals(OptionalString(existingGemini, "id"), credentialId, StringComparison.Ordinal) &&
+                            string.Equals(OptionalString(existingGemini, "name"), CredentialName, StringComparison.Ordinal);
+        credentials[CredentialType] = new JsonObject
+        {
+            ["id"] = credentialId,
+            ["name"] = CredentialName
+        };
+
+        var payload = new JsonObject();
+        foreach (var property in new[]
+                 {
+                     "name", "description", "nodes", "connections", "nodeGroups",
+                     "staticData", "pinData"
+                 })
+        {
+            if (workflow.TryGetPropertyValue(property, out var value))
+            {
+                payload[property] = value?.DeepClone();
+            }
+        }
+
+        var writableSettings = new JsonObject();
+        foreach (var setting in settings)
+        {
+            if (WritableWorkflowSettings.Contains(setting.Key))
+            {
+                writableSettings[setting.Key] = setting.Value?.DeepClone();
+            }
+        }
+
+        payload["settings"] = writableSettings;
+
+        if (payload["name"] is null ||
+            payload["nodes"] is null ||
+            payload["connections"] is null ||
+            payload["settings"] is null)
+        {
+            throw new JsonException("Workflow update payload is incomplete.");
+        }
+
+        return new N8nPreparedWorkflow(
+            workflowId,
+            workflowName,
+            target.NodeName,
+            payload,
+            !alreadyMapped);
+    }
+
+    private async Task<N8nWorkflowMappingResult?> UpdateWorkflowAsync(
+        N8nPreparedWorkflow workflow,
+        string credentialId,
+        string n8nApiKey,
+        CancellationToken cancellationToken)
+    {
+        var payload = JsonSerializer.SerializeToUtf8Bytes(workflow.Payload);
+        try
+        {
+            using var request = CreateAuthorizedRequest(
+                HttpMethod.Put,
+                new Uri(apiBaseUri, $"workflows/{Uri.EscapeDataString(workflow.WorkflowId)}"),
+                n8nApiKey);
+            request.Content = new ByteArrayContent(payload);
+            request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+            using var response = await client.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            var error = WorkflowApiError(response, "workflow:update");
+            if (error is not null)
+            {
+                return error;
+            }
+
+            var responsePayload = await ReadLimitedContentAsync(response.Content, cancellationToken);
+            var updatedWorkflow = JsonNode.Parse(responsePayload) as JsonObject;
+            if (updatedWorkflow is null ||
+                !string.Equals(RequiredString(updatedWorkflow, "id"), workflow.WorkflowId, StringComparison.Ordinal) ||
+                !string.Equals(RequiredString(updatedWorkflow, "name"), workflow.WorkflowName, StringComparison.Ordinal) ||
+                !RequiredBoolean(updatedWorkflow, "active", out var active) || active ||
+                updatedWorkflow["activeVersion"] is not null ||
+                !WorkflowNodeUsesCredential(updatedWorkflow, workflow.NodeName, credentialId))
+            {
+                return new N8nWorkflowMappingResult(
+                    N8nWorkflowMappingStatus.Rejected,
+                    $"n8n did not confirm a safe disabled mapping for '{workflow.WorkflowName}'.");
+            }
+
+            return null;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(payload);
+        }
+    }
+
+    private static bool WorkflowNodeUsesCredential(
+        JsonObject workflow,
+        string nodeName,
+        string credentialId)
+    {
+        if (workflow["nodes"] is not JsonArray nodes)
+        {
+            return false;
+        }
+
+        var matchingNodes = nodes.OfType<JsonObject>().Where(candidate =>
+            string.Equals(OptionalString(candidate, "name"), nodeName, StringComparison.Ordinal) &&
+            string.Equals(OptionalString(candidate, "type"), GeminiNodeType, StringComparison.Ordinal)).ToList();
+        if (matchingNodes.Count != 1)
+        {
+            return false;
+        }
+
+        var node = matchingNodes[0];
+        var credential = node?["credentials"]?[CredentialType] as JsonObject;
+        return credential is not null &&
+               string.Equals(OptionalString(credential, "id"), credentialId, StringComparison.Ordinal) &&
+               string.Equals(OptionalString(credential, "name"), CredentialName, StringComparison.Ordinal);
+    }
+
+    private static N8nWorkflowMappingResult? WorkflowApiError(
+        HttpResponseMessage response,
+        string requiredScope)
+    {
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return new N8nWorkflowMappingResult(
+                N8nWorkflowMappingStatus.AuthenticationFailed,
+                $"n8n API authentication failed or the key lacks {requiredScope} permission.");
+        }
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return new N8nWorkflowMappingResult(
+                N8nWorkflowMappingStatus.Missing,
+                "A required n8n workflow no longer exists.");
+        }
+
+        return response.IsSuccessStatusCode
+            ? null
+            : new N8nWorkflowMappingResult(
+                N8nWorkflowMappingStatus.Rejected,
+                $"n8n rejected workflow mapping with HTTP {(int)response.StatusCode}.");
+    }
+
+    private static N8nWorkflowMappingResult ConvertCredentialError(
+        N8nCredentialHandoffResult error) => error.Status switch
+        {
+            N8nCredentialHandoffStatus.AuthenticationFailed => new(
+                N8nWorkflowMappingStatus.AuthenticationFailed,
+                "n8n API authentication failed or the key lacks credential:list permission."),
+            N8nCredentialHandoffStatus.Conflict => new(
+                N8nWorkflowMappingStatus.Conflict,
+                error.Message),
+            N8nCredentialHandoffStatus.Unavailable => new(
+                N8nWorkflowMappingStatus.Unavailable,
+                error.Message),
+            _ => new(N8nWorkflowMappingStatus.Rejected, error.Message)
+        };
+
+    private static string RequiredString(JsonObject value, string property)
+    {
+        var result = OptionalString(value, property);
+        return string.IsNullOrEmpty(result)
+            ? throw new JsonException($"Required string '{property}' is missing.")
+            : result;
+    }
+
+    private static string? OptionalString(JsonObject value, string property) =>
+        value[property] is JsonValue jsonValue &&
+        jsonValue.TryGetValue<string>(out var result)
+            ? result
+            : null;
+
+    private static bool RequiredBoolean(JsonObject value, string property, out bool result)
+    {
+        result = false;
+        return value[property] is JsonValue jsonValue && jsonValue.TryGetValue(out result);
     }
 
     private async Task<(string? CredentialId, N8nCredentialHandoffResult? Error)>
@@ -1100,6 +1638,8 @@ internal static class HtmlPages
             "saved" => "<aside class=\"setup-result\"><strong>AI profile saved.</strong><span>No credential or workflow state was changed.</span></aside>",
             "credential_created" => "<aside class=\"setup-result\"><strong>Gemini credential created in n8n.</strong><span>The API keys were not stored in PostgreSQL or returned to the page.</span></aside>",
             "credential_updated" => "<aside class=\"setup-result\"><strong>Gemini credential updated in n8n.</strong><span>The existing reserved CTI credential was reused.</span></aside>",
+            "workflows_mapped" => "<aside class=\"setup-result\"><strong>Gemini workflow mapping completed.</strong><span>Two bundled workflow drafts were updated and remained disabled.</span></aside>",
+            "workflows_already_mapped" => "<aside class=\"setup-result\"><strong>Gemini workflows were already mapped.</strong><span>No workflow write or activation was performed.</span></aside>",
             _ => string.Empty
         };
         var handoffReady = n8nStatus.HealthReady &&
@@ -1115,10 +1655,19 @@ internal static class HtmlPages
                   <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
                   <label>n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
                   <label>Google Gemini API key<input type="password" name="ai_api_key" minlength="20" maxlength="512" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
-                  <div class="credential-guidance"><p>The n8n key needs <code>credential:list</code>, <code>credential:create</code>, and <code>credential:update</code> scopes. The Gemini key is written directly to n8n's encrypted credential store.</p><button type="submit">Create or update credential</button></div>
+                  <div class="credential-guidance"><p>The setup key needs <code>credential:list</code>, <code>credential:create</code>, <code>credential:update</code>, <code>workflow:list</code>, <code>workflow:read</code>, and <code>workflow:update</code> scopes. The Gemini key is written directly to n8n's encrypted credential store.</p><button type="submit">Create or update credential</button></div>
                 </form>
                 """
             : $"<div class=\"credential-unavailable\"><strong>Credential input is locked.</strong><p>{E(aiProvider.ProviderKey == "google_gemini" ? "Complete the n8n boundary check first." : "Save the bundled Google Gemini profile first.")}</p></div>";
+        var workflowMappingForm = credentialFormReady
+            ? $$"""
+                <form class="credential-form workflow-mapping-form" method="post" action="/setup/workflow-mapping" autocomplete="off">
+                  <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
+                  <label>n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+                  <div class="credential-guidance"><p>The reserved Gemini credential must already exist. Mapping is limited to <code>CTI Article Analysis</code> and <code>CTI Weekly Report</code>; both must be disabled, unpublished, and structurally compatible.</p><button type="submit">Map disabled workflows</button></div>
+                </form>
+                """
+            : "<div class=\"credential-unavailable\"><strong>Workflow mapping is locked.</strong><p>Complete the Gemini profile and n8n boundary check first.</p></div>";
 
         return Layout("Guided setup", email, $$"""
             <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
@@ -1176,7 +1725,11 @@ internal static class HtmlPages
                 </div>
                 {{credentialForm}}
               </div>
-              <div class="setup-next"><div><strong>Next: workflow credential mapping</strong><p>The following package will map the reserved n8n credential to the bundled Gemini workflow nodes without activating any workflow.</p></div><button type="button" disabled aria-disabled="true">Workflow mapping is next</button></div>
+              <div class="workflow-mapping-section">
+                <div class="setup-heading"><div><p class="eyebrow">WORKFLOW CREDENTIAL MAPPING</p><h3>Gemini workflow drafts</h3></div><span class="check-state warning">Manual confirmation</span></div>
+                {{workflowMappingForm}}
+              </div>
+              <div class="setup-next"><div><strong>Next: data-source and messaging credentials</strong><p>PostgreSQL and optional Telegram credentials still need their own guarded handoff and workflow mapping before review and activation.</p></div><button type="button" disabled aria-disabled="true">Additional credentials are next</button></div>
             </section>
             """);
     }

@@ -227,6 +227,15 @@
   font: 1.5rem/1.15 Georgia, serif;
 }
 
+.workflow-mapping-section {
+  border-bottom: 1px solid var(--line);
+}
+
+.workflow-mapping-section h3 {
+  margin: 0.15rem 0 0;
+  font: 1.5rem/1.15 Georgia, serif;
+}
+
 .handoff-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -284,6 +293,10 @@
 
 .credential-guidance button {
   flex: 0 0 auto;
+}
+
+.workflow-mapping-form label {
+  grid-column: 1 / -1;
 }
 
 .credential-unavailable {

@@ -56,7 +56,9 @@ The protected `/setup` page provides an installation and source-health check plu
 
 The same page performs a secret-free n8n handoff preflight against `CTI_N8N_API_URL`. It checks the health endpoint, confirms the credential schema route exists, and verifies that an unauthenticated request is rejected. The probe never sends an n8n API key or AI credential.
 
-For the bundled Gemini adapter, the one-time handoff form accepts an n8n API key with `credential:list`, `credential:create`, and `credential:update` scopes plus the Gemini API key. Both values remain request-scoped: the dashboard resolves the reserved `CTI Self-Hosted - Google Gemini` credential by name and creates or updates it directly through the n8n public API. Neither key is written to PostgreSQL, reflected in HTML, or placed in a URL. This step does not import, modify, or activate workflows.
+For the bundled Gemini adapter, the one-time handoff form accepts an n8n API key with `credential:list`, `credential:create`, `credential:update`, `workflow:list`, `workflow:read`, and `workflow:update` scopes plus the Gemini API key. Both values remain request-scoped: the dashboard resolves the reserved `CTI Self-Hosted - Google Gemini` credential by name and creates or updates it directly through the n8n public API. Neither key is written to PostgreSQL, reflected in HTML, or placed in a URL.
+
+The separate workflow-mapping action binds that reserved credential only to the expected Gemini nodes in `CTI Article Analysis` and `CTI Weekly Report`. It refuses missing or duplicate workflow names, unexpected Gemini-node layouts, archived workflows, and active or published workflows. A successful mapping updates draft workflow data only; it never calls the n8n activation API.
 
 ### Connect n8n
 
