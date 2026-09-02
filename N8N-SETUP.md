@@ -19,7 +19,7 @@ The protected dashboard `/setup` page can create this credential and map it to a
 
 Create one PostgreSQL credential in n8n and assign it to every PostgreSQL node:
 
-- Name: `CTI PostgreSQL`
+- Name: `CTI Self-Hosted - PostgreSQL`
 - Host: `cti-db`
 - Port: `5432`
 - Database: `cti`
@@ -51,6 +51,23 @@ Use Telegram only if these optional workflows are needed:
 - `n8n Workflow Error Alerts`
 
 Review the configured private user/chat ID before activation. The query workflow requires both sender ID and private chat ID to match this value; group chats are intentionally excluded. Never publish the query bot without this authorization guard.
+
+## Read-only activation audit
+
+Return to the protected dashboard `/setup` page after credential handoff and workflow mapping. In **Activation readiness**, enter a temporary n8n API key with only these scopes:
+
+- `credential:list`
+- `workflow:list`
+- `workflow:read`
+
+Select AI and Telegram only when those optional components will be activated. The audit verifies:
+
+- the reserved PostgreSQL credential and all 31 expected database-node mappings;
+- both Gemini model-node mappings when AI is selected;
+- all five Telegram mappings, the direct private-chat guard, and matching delivery destinations when Telegram is selected;
+- all eight bundled workflows remain disabled, unpublished, and unarchived.
+
+The key is request-scoped and is not stored, reflected in HTML, or placed in a URL. The audit performs GET requests only. It never updates or activates a workflow.
 
 ## Activation order
 

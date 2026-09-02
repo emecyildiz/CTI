@@ -64,6 +64,8 @@ The PostgreSQL handoff follows the same boundary. The user supplies the generate
 
 Optional Telegram setup creates the reserved `CTI Self-Hosted - Telegram` credential directly in n8n, then maps it to exactly five expected nodes in three disabled workflows. The operator supplies one numeric private user/chat ID: the query workflow requires both sender and chat IDs to match it, while weekly delivery and workflow-error alerts use the same destination. Public exports contain placeholders rather than a personal Telegram identifier.
 
+The final setup step is a read-only activation-readiness audit. Supply an n8n API key with only `credential:list`, `workflow:list`, and `workflow:read`, then select whether AI and Telegram will be enabled. The audit confirms the reserved credentials, all expected node mappings, the shared private Telegram destination when selected, and the disabled/unpublished/unarchived state of all eight bundled workflows. It does not update credentials, modify workflows, or activate anything; activation remains a deliberate one-workflow-at-a-time action in n8n.
+
 ### Connect n8n
 
 Attach the n8n container to the CTI network, or declare the network as external in the n8n Compose file:
@@ -83,6 +85,7 @@ networks:
 
 The guided `/setup` page can create and map this credential. For a manual setup, create an n8n PostgreSQL credential with:
 
+- Name: `CTI Self-Hosted - PostgreSQL`
 - Host: `cti-db`
 - Database: `cti`
 - User: `cti_n8n`

@@ -616,6 +616,61 @@ app.MapPost("/setup/telegram-workflow-mapping", async (
     };
 });
 
+app.MapPost("/setup/readiness", async (
+    HttpContext context,
+    N8nHandoffProbe n8nProbe,
+    CancellationToken cancellationToken) =>
+{
+    if (!context.Request.HasFormContentType)
+    {
+        return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+    }
+
+    if (context.Request.ContentLength is null or <= 0 or > 8192)
+    {
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+    }
+
+    var form = await context.Request.ReadFormAsync(cancellationToken);
+    if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
+    if (!IsValidSecretInput(n8nApiKey, 20, 4096))
+    {
+        return Results.BadRequest("Invalid n8n API key format.");
+    }
+
+    var includeAi = string.Equals(form["include_ai"].FirstOrDefault(), "true", StringComparison.Ordinal);
+    var includeTelegram = string.Equals(form["include_telegram"].FirstOrDefault(), "true", StringComparison.Ordinal);
+    var readiness = await n8nProbe.AuditReadinessAsync(
+        n8nApiKey,
+        includeAi,
+        includeTelegram,
+        cancellationToken);
+
+    return readiness.Status switch
+    {
+        N8nReadinessStatus.Ready or N8nReadinessStatus.NotReady => Results.Content(
+            HtmlPages.SetupReadiness(readiness, GetAuthenticatedIdentity(context)),
+            "text/html; charset=utf-8"),
+        N8nReadinessStatus.AuthenticationFailed => Results.Text(
+            readiness.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status401Unauthorized),
+        N8nReadinessStatus.Unavailable => Results.Text(
+            readiness.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status503ServiceUnavailable),
+        _ => Results.Text(
+            readiness.Message,
+            "text/plain; charset=utf-8",
+            statusCode: StatusCodes.Status502BadGateway)
+    };
+});
+
 app.MapGet("/", async (
     HttpContext context,
     NpgsqlDataSource dataSource,
@@ -962,6 +1017,26 @@ internal sealed record N8nWorkflowMappingResult(
     N8nWorkflowMappingStatus Status,
     string Message);
 
+internal enum N8nReadinessStatus
+{
+    Ready,
+    NotReady,
+    AuthenticationFailed,
+    Rejected,
+    Unavailable
+}
+
+internal sealed record N8nReadinessComponent(
+    string Name,
+    string State,
+    bool Satisfied,
+    string Detail);
+
+internal sealed record N8nReadinessResult(
+    N8nReadinessStatus Status,
+    IReadOnlyList<N8nReadinessComponent> Components,
+    string Message);
+
 internal sealed record N8nWorkflowTarget(
     string WorkflowName,
     string CredentialType,
@@ -996,6 +1071,10 @@ internal sealed class N8nHandoffProbe : IDisposable
     private const int MaximumResponseBytes = 262144;
     private static readonly Regex TelegramAllowedIdAssignment = new(
         @"const allowedId = '(?:__CTI_TELEGRAM_ALLOWED_ID__|[0-9]{5,20})';",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
+    private static readonly Regex TelegramConfiguredAllowedId = new(
+        @"const allowedId = '(?<id>[0-9]{5,20})';",
         RegexOptions.CultureInvariant,
         TimeSpan.FromMilliseconds(100));
     private static readonly Regex TelegramChatIdValue = new(
@@ -1298,6 +1377,342 @@ internal sealed class N8nHandoffProbe : IDisposable
             "The Telegram credential and authorized private chat were mapped to five nodes in three disabled workflows.",
             cancellationToken,
             authorizedChatId);
+
+    internal async Task<N8nReadinessResult> AuditReadinessAsync(
+        string n8nApiKey,
+        bool includeAi,
+        bool includeTelegram,
+        CancellationToken cancellationToken)
+    {
+        await credentialLock.WaitAsync(cancellationToken);
+        try
+        {
+            var components = new List<N8nReadinessComponent>();
+            var credentialIds = new Dictionary<string, string?>(StringComparer.Ordinal);
+            var credentialChecks = new[]
+            {
+                (Key: "postgres", Name: PostgresCredentialName, Type: PostgresCredentialType, Required: true),
+                (Key: "ai", Name: GeminiCredentialName, Type: GeminiCredentialType, Required: includeAi),
+                (Key: "telegram", Name: TelegramCredentialName, Type: TelegramCredentialType, Required: includeTelegram)
+            };
+
+            foreach (var check in credentialChecks)
+            {
+                if (!check.Required)
+                {
+                    credentialIds[check.Key] = null;
+                    continue;
+                }
+
+                var lookup = await FindManagedCredentialAsync(
+                    n8nApiKey,
+                    check.Name,
+                    check.Type,
+                    cancellationToken);
+                if (lookup.Error is not null)
+                {
+                    var fatal = ReadinessApiError(lookup.Error);
+                    if (fatal is not null)
+                    {
+                        return fatal;
+                    }
+
+                    credentialIds[check.Key] = null;
+                    continue;
+                }
+
+                credentialIds[check.Key] = lookup.CredentialId;
+            }
+
+            var allTargets = PostgresWorkflowTargets
+                .Concat(GeminiWorkflowTargets)
+                .Concat(TelegramWorkflowTargets)
+                .GroupBy(target => target.WorkflowName, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .OrderBy(target => target.WorkflowName, StringComparer.Ordinal)
+                .ToArray();
+            var workflows = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+            var workflowProblems = new List<string>();
+            foreach (var target in allTargets)
+            {
+                var lookup = await FindWorkflowByNameAsync(target, n8nApiKey, cancellationToken);
+                if (lookup.Error is null)
+                {
+                    workflows[target.WorkflowName] = lookup.Workflow!;
+                    continue;
+                }
+
+                if (lookup.Error.Status is N8nWorkflowMappingStatus.AuthenticationFailed)
+                {
+                    return new N8nReadinessResult(
+                        N8nReadinessStatus.AuthenticationFailed,
+                        [],
+                        "n8n API authentication failed or the key lacks workflow:list/workflow:read permission.");
+                }
+
+                if (lookup.Error.Status is N8nWorkflowMappingStatus.Unavailable)
+                {
+                    return new N8nReadinessResult(
+                        N8nReadinessStatus.Unavailable,
+                        [],
+                        "n8n could not be reached during the readiness audit.");
+                }
+
+                if (lookup.Error.Status is N8nWorkflowMappingStatus.Rejected)
+                {
+                    return new N8nReadinessResult(
+                        N8nReadinessStatus.Rejected,
+                        [],
+                        "n8n returned an invalid or rejected workflow response.");
+                }
+
+                workflowProblems.Add(lookup.Error.Message);
+            }
+
+            var safeDrafts = workflowProblems.Count == 0 && workflows.Count == allTargets.Length &&
+                             workflows.Values.All(IsDisabledDraft);
+            components.Add(new N8nReadinessComponent(
+                "Workflow draft state",
+                safeDrafts ? "Ready" : "Not ready",
+                safeDrafts,
+                safeDrafts
+                    ? $"All {allTargets.Length} bundled workflows are disabled, unpublished, and unarchived."
+                    : workflowProblems.Count > 0
+                        ? string.Join(" ", workflowProblems)
+                        : "One or more bundled workflows are active, published, archived, or structurally incomplete."));
+
+            AddCredentialMappingComponent(
+                components,
+                "PostgreSQL credential and mappings",
+                credentialIds["postgres"],
+                PostgresWorkflowTargets,
+                workflows,
+                "31 expected database nodes across seven workflows use the restricted CTI credential.");
+
+            if (includeAi)
+            {
+                AddCredentialMappingComponent(
+                    components,
+                    "AI credential and mappings",
+                    credentialIds["ai"],
+                    GeminiWorkflowTargets,
+                    workflows,
+                    "Both bundled Gemini model nodes use the reserved operator credential.");
+            }
+            else
+            {
+                components.Add(new N8nReadinessComponent(
+                    "AI credential and mappings",
+                    "Skipped",
+                    true,
+                    "AI analysis and reporting were not selected for this audit."));
+            }
+
+            if (includeTelegram)
+            {
+                var telegramCredentialId = credentialIds["telegram"];
+                var mappingsReady = telegramCredentialId is not null && TelegramWorkflowTargets.All(target =>
+                    workflows.TryGetValue(target.WorkflowName, out var workflow) &&
+                    WorkflowTargetUsesCredential(workflow, target, telegramCredentialId));
+                string? chatId = null;
+                var authorizationReady = mappingsReady && TelegramDestinationsMatch(workflows, out chatId);
+                components.Add(new N8nReadinessComponent(
+                    "Telegram credential, mappings, and authorization",
+                    authorizationReady ? "Ready" : "Not ready",
+                    authorizationReady,
+                    authorizationReady
+                        ? $"Five expected Telegram nodes use the reserved credential and one private destination ({MaskIdentifier(chatId!)}) is enforced."
+                        : telegramCredentialId is null
+                            ? $"Reserved credential '{TelegramCredentialName}' was not found."
+                            : "Telegram node mappings, private-chat guard, or delivery destinations do not match."));
+            }
+            else
+            {
+                components.Add(new N8nReadinessComponent(
+                    "Telegram credential, mappings, and authorization",
+                    "Skipped",
+                    true,
+                    "Private Telegram query and delivery were not selected for this audit."));
+            }
+
+            var ready = components.All(component => component.Satisfied);
+            return new N8nReadinessResult(
+                ready ? N8nReadinessStatus.Ready : N8nReadinessStatus.NotReady,
+                components,
+                ready
+                    ? "The selected CTI components are ready for manual, one-at-a-time activation."
+                    : "The selected CTI components are not ready for activation. Resolve the failed checks and run the audit again.");
+        }
+        catch (Exception exception) when (
+            (exception is HttpRequestException ||
+             exception is TaskCanceledException ||
+             exception is JsonException ||
+             exception is InvalidDataException ||
+             exception is N8nWorkflowSafetyException) &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            return exception is HttpRequestException or TaskCanceledException
+                ? new N8nReadinessResult(
+                    N8nReadinessStatus.Unavailable,
+                    [],
+                    "n8n could not be reached during the readiness audit.")
+                : new N8nReadinessResult(
+                    N8nReadinessStatus.Rejected,
+                    [],
+                    "n8n returned an invalid workflow or credential response.");
+        }
+        finally
+        {
+            credentialLock.Release();
+        }
+    }
+
+    private static void AddCredentialMappingComponent(
+        ICollection<N8nReadinessComponent> components,
+        string componentName,
+        string? credentialId,
+        IReadOnlyList<N8nWorkflowTarget> targets,
+        IReadOnlyDictionary<string, JsonObject> workflows,
+        string readyDetail)
+    {
+        var mappingsReady = credentialId is not null && targets.All(target =>
+            workflows.TryGetValue(target.WorkflowName, out var workflow) &&
+            WorkflowTargetUsesCredential(workflow, target, credentialId));
+        components.Add(new N8nReadinessComponent(
+            componentName,
+            mappingsReady ? "Ready" : "Not ready",
+            mappingsReady,
+            mappingsReady
+                ? readyDetail
+                : credentialId is null
+                    ? "The reserved credential was not found or was ambiguous."
+                    : "One or more expected workflow nodes do not use the reserved credential."));
+    }
+
+    private static N8nReadinessResult? ReadinessApiError(N8nCredentialHandoffResult error) =>
+        error.Status switch
+        {
+            N8nCredentialHandoffStatus.AuthenticationFailed => new N8nReadinessResult(
+                N8nReadinessStatus.AuthenticationFailed,
+                [],
+                "n8n API authentication failed or the key lacks credential:list permission."),
+            N8nCredentialHandoffStatus.Unavailable => new N8nReadinessResult(
+                N8nReadinessStatus.Unavailable,
+                [],
+                "n8n could not be reached during the readiness audit."),
+            N8nCredentialHandoffStatus.Rejected => new N8nReadinessResult(
+                N8nReadinessStatus.Rejected,
+                [],
+                "n8n rejected credential discovery during the readiness audit."),
+            _ => null
+        };
+
+    private static bool IsDisabledDraft(JsonObject workflow) =>
+        RequiredBoolean(workflow, "active", out var active) && !active &&
+        RequiredBoolean(workflow, "isArchived", out var archived) && !archived &&
+        workflow["activeVersion"] is null;
+
+    private static bool WorkflowTargetUsesCredential(
+        JsonObject workflow,
+        N8nWorkflowTarget target,
+        string credentialId)
+    {
+        if (workflow["nodes"] is not JsonArray nodes)
+        {
+            return false;
+        }
+
+        var expectedTypes = target.NodeTypesByName.Values.ToHashSet(StringComparer.Ordinal);
+        var matchingNodes = nodes.OfType<JsonObject>()
+            .Where(node => expectedTypes.Contains(OptionalString(node, "type") ?? string.Empty))
+            .ToList();
+        if (matchingNodes.Count != target.NodeTypesByName.Count)
+        {
+            return false;
+        }
+
+        var names = matchingNodes.Select(node => OptionalString(node, "name") ?? string.Empty).ToList();
+        if (names.Distinct(StringComparer.Ordinal).Count() != names.Count)
+        {
+            return false;
+        }
+
+        return matchingNodes.All(node =>
+        {
+            var nodeName = OptionalString(node, "name") ?? string.Empty;
+            if (!target.NodeTypesByName.TryGetValue(nodeName, out var expectedType) ||
+                !string.Equals(OptionalString(node, "type"), expectedType, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var credential = node["credentials"]?[target.CredentialType] as JsonObject;
+            return credential is not null &&
+                   string.Equals(OptionalString(credential, "id"), credentialId, StringComparison.Ordinal) &&
+                   string.Equals(OptionalString(credential, "name"), target.CredentialName, StringComparison.Ordinal);
+        });
+    }
+
+    private static bool TelegramDestinationsMatch(
+        IReadOnlyDictionary<string, JsonObject> workflows,
+        out string? chatId)
+    {
+        chatId = null;
+        if (!workflows.TryGetValue("CTI Telegram Query", out var queryWorkflow) ||
+            queryWorkflow["nodes"] is not JsonArray queryNodes)
+        {
+            return false;
+        }
+
+        var authorizationNode = RequiredWorkflowNode(
+            queryNodes,
+            "Authorize and Parse Request",
+            "n8n-nodes-base.code");
+        if (authorizationNode["parameters"] is not JsonObject authorizationParameters)
+        {
+            return false;
+        }
+
+        var source = OptionalString(authorizationParameters, "jsCode") ?? string.Empty;
+        var matches = TelegramConfiguredAllowedId.Matches(source);
+        if (matches.Count != 1 ||
+            !source.Contains("fromId !== allowedId || chatId !== allowedId", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        chatId = matches[0].Groups["id"].Value;
+        return TelegramSendTargetMatches(
+                   workflows,
+                   "CTI Weekly Telegram Delivery",
+                   "Send Weekly Report to Telegram",
+                   chatId) &&
+               TelegramSendTargetMatches(
+                   workflows,
+                   "n8n Workflow Error Alerts",
+                   "Send a text message",
+                   chatId);
+    }
+
+    private static bool TelegramSendTargetMatches(
+        IReadOnlyDictionary<string, JsonObject> workflows,
+        string workflowName,
+        string nodeName,
+        string chatId)
+    {
+        if (!workflows.TryGetValue(workflowName, out var workflow) ||
+            workflow["nodes"] is not JsonArray nodes)
+        {
+            return false;
+        }
+
+        var node = RequiredWorkflowNode(nodes, nodeName, TelegramNodeType);
+        return node["parameters"] is JsonObject parameters &&
+               string.Equals(OptionalString(parameters, "chatId"), chatId, StringComparison.Ordinal);
+    }
+
+    private static string MaskIdentifier(string value) =>
+        value.Length <= 6 ? "••••" : $"{value[..2]}••••{value[^2..]}";
 
     private async Task<N8nWorkflowMappingResult> MapCredentialWorkflowsAsync(
         string n8nApiKey,
@@ -2352,6 +2767,16 @@ internal static class HtmlPages
                 </form>
                 """
             : "<div class=\"credential-unavailable\"><strong>Telegram workflow mapping is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
+        var readinessForm = handoffReady
+            ? $$"""
+                <form class="credential-form readiness-form" method="post" action="/setup/readiness" autocomplete="off">
+                  <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
+                  <label>Read-only n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+                  <fieldset><legend>Components intended for activation</legend><label class="check-option"><input type="checkbox" name="include_ai" value="true" checked> AI analysis and weekly reporting</label><label class="check-option"><input type="checkbox" name="include_telegram" value="true"> Private Telegram query and delivery</label></fieldset>
+                  <div class="credential-guidance"><p>This audit needs only <code>credential:list</code>, <code>workflow:list</code>, and <code>workflow:read</code>. It performs no writes and never activates a workflow.</p><button type="submit">Run read-only audit</button></div>
+                </form>
+                """
+            : "<div class=\"credential-unavailable\"><strong>Activation readiness audit is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
 
         return Layout("Guided setup", email, $$"""
             <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
@@ -2437,7 +2862,41 @@ internal static class HtmlPages
                 <div class="setup-heading"><div><p class="eyebrow">PRIVATE CHAT AUTHORIZATION</p><h3>Three bundled workflow drafts</h3></div></div>
                 {{telegramMappingForm}}
               </div>
-              <div class="setup-next"><div><strong>Next: review and controlled activation</strong><p>Credentials and targets must be reviewed in n8n before workflows are activated one at a time.</p></div><button type="button" disabled aria-disabled="true">Activation review is next</button></div>
+            </section>
+            <section class="setup-panel readiness-panel">
+              <div class="setup-heading"><div><p class="eyebrow">STEP 04</p><h2>Activation readiness</h2></div><span class="check-state warning">Read only</span></div>
+              <p class="section-intro">Confirm the reserved credentials, all expected node mappings, the optional Telegram boundary, and the disabled state of every bundled workflow before manual activation.</p>
+              {{readinessForm}}
+            </section>
+            """);
+    }
+
+    internal static string SetupReadiness(N8nReadinessResult result, string email)
+    {
+        var ready = result.Status == N8nReadinessStatus.Ready;
+        var cards = string.Join("", result.Components.Select(component =>
+        {
+            var cssClass = component.State == "Ready" ? "ready" :
+                component.State == "Skipped" ? "skipped" : "warning";
+            return $$"""
+                <article>
+                  <div><strong>{{E(component.Name)}}</strong><span class="check-state {{cssClass}}">{{E(component.State)}}</span></div>
+                  <p>{{E(component.Detail)}}</p>
+                </article>
+                """;
+        }));
+
+        return Layout("Activation readiness", email, $$"""
+            <section class="hero setup-hero"><p class="eyebrow">READ-ONLY ACTIVATION REVIEW</p><h1>{{(ready ? "Ready for controlled activation" : "Configuration needs attention")}}</h1><p>{{E(result.Message)}}</p></section>
+            <aside class="setup-notice safe-audit"><strong>No changes were made</strong><span>The API key was used only for credential and workflow reads. It was not stored, reflected, or placed in a URL.</span></aside>
+            <section class="readiness-results" aria-label="Activation readiness results">{{cards}}</section>
+            <section class="setup-panel activation-guidance">
+              <div class="setup-heading"><div><p class="eyebrow">MANUAL ACTIVATION</p><h2>{{(ready ? "Proceed one workflow at a time" : "Resolve failed checks first")}}</h2></div><span class="check-state {{(ready ? "ready" : "warning")}}">{{(ready ? "Review passed" : "Not ready")}}</span></div>
+              <div class="activation-body">
+                <p>The dashboard intentionally does not activate workflows. When every selected check passes, open n8n and inspect the first execution after each activation.</p>
+                <ol><li>CTI Source Collection</li><li>CTI Article Analysis</li><li>CTI Vulnerability Enrichment</li><li>CTI Retention Maintenance</li><li>CTI Weekly Report</li><li>Optional Telegram workflows and error alerts</li></ol>
+                <a class="primary-link" href="/setup">← Return to setup</a>
+              </div>
             </section>
             """);
     }

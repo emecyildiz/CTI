@@ -116,6 +116,10 @@
   color: #ffd278;
 }
 
+.skipped {
+  color: var(--muted);
+}
+
 .system-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -310,6 +314,86 @@
   grid-column: 1 / -1;
 }
 
+.readiness-panel {
+  margin-top: 1rem;
+}
+
+.readiness-form fieldset {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+}
+
+.readiness-form legend {
+  padding: 0 0.35rem;
+  color: var(--muted);
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.readiness-form .check-option {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.readiness-form .check-option input {
+  width: auto;
+}
+
+.safe-audit {
+  border-color: var(--accent);
+  background: #0d1713;
+}
+
+.safe-audit strong {
+  color: var(--accent);
+}
+
+.readiness-results {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1px;
+  margin-bottom: 1rem;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+
+.readiness-results article {
+  padding: 1.25rem;
+  background: #0d1210;
+}
+
+.readiness-results article div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.readiness-results article p,
+.activation-body p {
+  margin: 0.7rem 0 0;
+  color: var(--muted);
+}
+
+.activation-guidance {
+  margin-bottom: 1rem;
+}
+
+.activation-body {
+  padding: 0 1.25rem 1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+.activation-body ol {
+  margin: 1rem 0;
+  padding-left: 1.4rem;
+}
+
 .credential-unavailable {
   padding: 1.25rem;
   border-top: 1px solid var(--line);
@@ -357,6 +441,10 @@
   }
 
   .handoff-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .readiness-results {
     grid-template-columns: 1fr;
   }
 
