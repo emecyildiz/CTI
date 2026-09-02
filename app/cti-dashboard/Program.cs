@@ -122,6 +122,28 @@ app.MapGet("/setup", async (
         authenticationMode);
     await reader.CloseAsync();
 
+    var sourceOptions = new List<SetupSourceOption>();
+    await using (var sourceCommand = dataSource.CreateCommand("""
+                     SELECT name, trust_score, enabled, selectable,
+                            last_checked_at, last_success_at, last_error_code
+                     FROM cti.dashboard_source_options
+                     ORDER BY selectable DESC, trust_score DESC, name;
+                     """))
+    await using (var sourceReader = await sourceCommand.ExecuteReaderAsync(cancellationToken))
+    {
+        while (await sourceReader.ReadAsync(cancellationToken))
+        {
+            sourceOptions.Add(new SetupSourceOption(
+                sourceReader.GetString(0),
+                sourceReader.GetInt16(1),
+                sourceReader.GetBoolean(2),
+                sourceReader.GetBoolean(3),
+                sourceReader.IsDBNull(4) ? null : sourceReader.GetDateTime(4),
+                sourceReader.IsDBNull(5) ? null : sourceReader.GetDateTime(5),
+                sourceReader.IsDBNull(6) ? null : sourceReader.GetString(6)));
+        }
+    }
+
     await using var providerCommand = dataSource.CreateCommand("""
         SELECT profile_defined, provider_key, provider_label, adapter_key,
                model_identifier, api_base_url, adapter_status, updated_at
@@ -148,6 +170,7 @@ app.MapGet("/setup", async (
     return Results.Content(
         HtmlPages.Setup(
             status,
+            sourceOptions,
             aiProvider,
             n8nStatus,
             csrfToken,
@@ -228,6 +251,79 @@ app.MapPost("/setup/ai-profile", async (
 
     await transaction.CommitAsync(cancellationToken);
     return Results.Redirect("/setup?result=saved");
+});
+
+app.MapPost("/setup/sources", async (
+    HttpContext context,
+    NpgsqlDataSource dataSource,
+    CancellationToken cancellationToken) =>
+{
+    if (!context.Request.HasFormContentType)
+    {
+        return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+    }
+
+    if (context.Request.ContentLength is null or <= 0 or > 8192)
+    {
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+    }
+
+    var form = await context.Request.ReadFormAsync(cancellationToken);
+    if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var selectedSources = form["source"]
+        .Select(value => value?.Trim() ?? string.Empty)
+        .ToArray();
+    if (selectedSources.Length is < 1 or > 6 ||
+        selectedSources.Any(value => value.Length is < 2 or > 80 || value.Any(char.IsControl)) ||
+        selectedSources.Distinct(StringComparer.Ordinal).Count() != selectedSources.Length)
+    {
+        return Results.BadRequest("Select between one and six unique reviewed sources.");
+    }
+
+    var selectableSources = new HashSet<string>(StringComparer.Ordinal);
+    await using (var allowedCommand = dataSource.CreateCommand("""
+                     SELECT name
+                     FROM cti.dashboard_source_options
+                     WHERE selectable = true;
+                     """))
+    await using (var allowedReader = await allowedCommand.ExecuteReaderAsync(cancellationToken))
+    {
+        while (await allowedReader.ReadAsync(cancellationToken))
+        {
+            selectableSources.Add(allowedReader.GetString(0));
+        }
+    }
+
+    if (selectableSources.Count != 6 || selectedSources.Any(source => !selectableSources.Contains(source)))
+    {
+        return Results.BadRequest("The source selection contains an unavailable source.");
+    }
+
+    await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+    await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+    await using (var writeMode = new NpgsqlCommand(
+                     "SET TRANSACTION READ WRITE;",
+                     connection,
+                     transaction))
+    {
+        await writeMode.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    await using (var command = new NpgsqlCommand(
+                     "SELECT cti.configure_reviewed_sources(@sources);",
+                     connection,
+                     transaction))
+    {
+        command.Parameters.AddWithValue("sources", selectedSources);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    await transaction.CommitAsync(cancellationToken);
+    return Results.Redirect("/setup?result=sources_saved");
 });
 
 app.MapPost("/setup/credential-handoff", async (
@@ -973,6 +1069,10 @@ internal sealed record SetupSystemStatus(
     int SchemaVersion, long EnabledSourceCount, long TotalSourceCount,
     long CheckedSourceCount, long FailingSourceCount,
     DateTime? LastSourceSuccessAt, string AuthenticationMode);
+
+internal sealed record SetupSourceOption(
+    string Name, short TrustScore, bool Enabled, bool Selectable,
+    DateTime? LastCheckedAt, DateTime? LastSuccessAt, string? LastErrorCode);
 
 internal sealed record AiProviderStatus(
     bool ProfileDefined, string? ProviderKey, string? ProviderLabel,
@@ -2650,6 +2750,7 @@ internal static class HtmlPages
 
     internal static string Setup(
         SetupSystemStatus status,
+        IReadOnlyList<SetupSourceOption> sourceOptions,
         AiProviderStatus aiProvider,
         N8nHandoffStatus n8nStatus,
         string csrfToken,
@@ -2700,8 +2801,33 @@ internal static class HtmlPages
             "telegram_credential_updated" => "<aside class=\"setup-result\"><strong>Telegram credential updated in n8n.</strong><span>The existing reserved CTI credential was reused.</span></aside>",
             "telegram_workflows_mapped" => "<aside class=\"setup-result\"><strong>Telegram workflow mapping completed.</strong><span>Five Telegram nodes and the private-chat authorization guard were configured in three disabled workflows.</span></aside>",
             "telegram_workflows_already_mapped" => "<aside class=\"setup-result\"><strong>Telegram workflows were already mapped.</strong><span>No workflow write or activation was performed.</span></aside>",
+            "sources_saved" => "<aside class=\"setup-result\"><strong>Reviewed source selection saved.</strong><span>The next collection run will load only the enabled catalog entries.</span></aside>",
             _ => string.Empty
         };
+        var sourceCards = string.Join("", sourceOptions.Select(source =>
+        {
+            var hasCurrentFailure = source.LastErrorCode is not null &&
+                                    (source.LastSuccessAt is null ||
+                                     source.LastCheckedAt is not null && source.LastCheckedAt >= source.LastSuccessAt);
+            var state = !source.Selectable ? "Compatibility blocked" :
+                hasCurrentFailure ? "Needs attention" :
+                source.LastSuccessAt is not null ? "Checked" : "Waiting";
+            var stateClass = !source.Selectable || hasCurrentFailure ? "warning" :
+                source.LastSuccessAt is not null ? "ready" : "skipped";
+            var detail = !source.Selectable
+                ? "Included for visibility but disabled because unattended article retrieval is currently incompatible."
+                : source.LastSuccessAt is not null
+                    ? $"Last successful collection: {D(source.LastSuccessAt.Value)}"
+                    : "No successful collection has been recorded yet.";
+            return $$"""
+                <label class="source-option {{(!source.Selectable ? "source-blocked" : "")}}">
+                  <input type="checkbox" name="source" value="{{E(source.Name)}}" {{(source.Enabled ? "checked" : "")}} {{(!source.Selectable ? "disabled" : "")}}>
+                  <span><strong>{{E(source.Name)}}</strong><small>Trust score {{source.TrustScore}}</small></span>
+                  <span class="check-state {{stateClass}}">{{E(state)}}</span>
+                  <p>{{E(detail)}}</p>
+                </label>
+                """;
+        }));
         var handoffReady = n8nStatus.HealthReady &&
                            n8nStatus.CredentialApiDetected &&
                            n8nStatus.AuthenticationRequired;
@@ -2785,8 +2911,8 @@ internal static class HtmlPages
             <ol class="setup-steps" aria-label="Setup progress">
               <li class="complete"><span>01</span><strong>System check</strong><small>Passed</small></li>
               <li class="active"><span>02</span><strong>AI provider</strong><small>Profile model ready</small></li>
-              <li><span>03</span><strong>Telegram &amp; sources</strong><small>Planned</small></li>
-              <li><span>04</span><strong>Review &amp; activate</strong><small>Planned</small></li>
+              <li><span>03</span><strong>Sources &amp; credentials</strong><small>Catalog available</small></li>
+              <li><span>04</span><strong>Review &amp; activate</strong><small>Read-only audit</small></li>
             </ol>
             <section class="setup-panel">
               <div class="setup-heading"><div><p class="eyebrow">STEP 01</p><h2>System check</h2></div><span class="check-state ready">Ready</span></div>
@@ -2796,7 +2922,7 @@ internal static class HtmlPages
                 <article><span>Reviewed sources</span><strong>{{status.EnabledSourceCount}} enabled / {{status.TotalSourceCount}} defined</strong><small>{{status.CheckedSourceCount}} enabled sources have completed a successful check.</small></article>
                 <article><span>Source health</span><strong class="{{sourceHealthClass}}">{{E(sourceHealthLabel)}}</strong><small>Last successful collection: {{E(lastCollection)}}</small></article>
                 <article><span>Access boundary</span><strong>{{E(accessLabel)}}</strong><small>The setup route uses the same protection as the dashboard.</small></article>
-                <article><span>CTI database writes</span><strong>Profile metadata only</strong><small>Credential material remains outside the PostgreSQL schema.</small></article>
+                <article><span>CTI database writes</span><strong>Profile and source state only</strong><small>Credential material remains outside the PostgreSQL schema.</small></article>
               </div>
             </section>
             <section class="setup-panel ai-panel">
@@ -2838,6 +2964,15 @@ internal static class HtmlPages
                 <div class="setup-heading"><div><p class="eyebrow">WORKFLOW CREDENTIAL MAPPING</p><h3>Gemini workflow drafts</h3></div><span class="check-state warning">Manual confirmation</span></div>
                 {{workflowMappingForm}}
               </div>
+            </section>
+            <section class="setup-panel source-panel">
+              <div class="setup-heading"><div><p class="eyebrow">STEP 03</p><h2>Reviewed sources</h2></div><span class="check-state ready">Allowlisted catalog</span></div>
+              <p class="section-intro">Choose from the bundled and reviewed source definitions. Feed URLs, article hosts, selectors, and trust scores cannot be edited from this screen.</p>
+              <form class="source-form" method="post" action="/setup/sources">
+                <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
+                <div class="source-options">{{sourceCards}}</div>
+                <div class="form-actions"><p>Select at least one source. Changes take effect when the next Source Collection run loads its source list.</p><button type="submit">Save source selection</button></div>
+              </form>
             </section>
             <section class="setup-panel database-panel">
               <div class="setup-heading"><div><p class="eyebrow">STEP 03</p><h2>PostgreSQL workflow access</h2></div><span class="check-state warning">Manual confirmation</span></div>

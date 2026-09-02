@@ -30,7 +30,7 @@ The guided installer:
 5. waits for service health checks;
 6. imports all CTI workflows in a disabled state and avoids duplicate imports.
 
-The user still creates the first local n8n owner account. The protected setup page can then create and map the operator-owned PostgreSQL, bundled Gemini, and optional Telegram credentials. Workflows are never activated automatically.
+The user still creates the first local n8n owner account. The protected setup page can then select from the reviewed source catalog and create and map the operator-owned PostgreSQL, bundled Gemini, and optional Telegram credentials. Workflows are never activated automatically.
 
 Published GitHub releases contain a versioned ZIP, SHA-256 checksum, and JSON manifest. The release pipeline is triggered only by a matching version tag, validates the package, and builds the downloadable archive automatically.
 
@@ -65,6 +65,8 @@ The PostgreSQL handoff follows the same boundary. The user supplies the generate
 Optional Telegram setup creates the reserved `CTI Self-Hosted - Telegram` credential directly in n8n, then maps it to exactly five expected nodes in three disabled workflows. The operator supplies one numeric private user/chat ID: the query workflow requires both sender and chat IDs to match it, while weekly delivery and workflow-error alerts use the same destination. Public exports contain placeholders rather than a personal Telegram identifier.
 
 The final setup step is a read-only activation-readiness audit. Supply an n8n API key with only `credential:list`, `workflow:list`, and `workflow:read`, then select whether AI and Telegram will be enabled. The audit confirms the reserved credentials, all expected node mappings, the shared private Telegram destination when selected, and the disabled/unpublished/unarchived state of all eight bundled workflows. It does not update credentials, modify workflows, or activate anything; activation remains a deliberate one-workflow-at-a-time action in n8n.
+
+Source selection is limited to the catalog bundled with the release. The setup page can enable any non-empty subset of the six compatible reviewed sources, but it cannot accept arbitrary feed URLs or modify host allowlists, selectors, or trust scores. Dark Reading and SecurityWeek remain visible but cannot be enabled while their unattended article retrieval is incompatible.
 
 ### Connect n8n
 
@@ -115,7 +117,7 @@ docker compose exec -T cti-db \
 curl --fail http://127.0.0.1:8080/health/ready
 ```
 
-The schema version must be `28` or newer on the current main branch. Database upgrades are shipped as versioned migrations rather than by recreating the volume.
+The schema version must be `29` or newer on the current main branch. Database upgrades are shipped as versioned migrations rather than by recreating the volume.
 
 ## Data and AI behavior
 

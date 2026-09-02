@@ -2,6 +2,8 @@
 
 All public workflow exports are deliberately disabled and contain no credential identifiers. Import them only once, then map operator-owned credentials in the n8n editor.
 
+Before activation, use the protected dashboard `/setup` page to choose at least one source from the bundled reviewed catalog. This action changes only the enabled state of known source definitions; it does not accept URLs or alter their host allowlists, selectors, or trust scores.
+
 ## One-time import
 
 Set `N8N_CONTAINER` in `.env`, start CTI Self-Hosted, then run:

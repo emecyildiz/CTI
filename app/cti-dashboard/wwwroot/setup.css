@@ -133,6 +133,66 @@
   margin-top: 1rem;
 }
 
+.source-panel {
+  margin-top: 1rem;
+}
+
+.database-panel,
+.telegram-panel {
+  margin-top: 1rem;
+}
+
+.source-form {
+  border-top: 1px solid var(--line);
+}
+
+.source-options {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1px;
+  background: var(--line);
+}
+
+.source-option {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.6rem 0.8rem;
+  align-items: start;
+  min-width: 0;
+  padding: 1rem 1.25rem;
+  background: #0d1210;
+  cursor: pointer;
+}
+
+.source-option input {
+  width: auto;
+  margin-top: 0.2rem;
+}
+
+.source-option > span:nth-of-type(1) {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.source-option small,
+.source-option p {
+  color: var(--muted);
+}
+
+.source-option p {
+  grid-column: 2 / -1;
+  margin: 0;
+}
+
+.source-blocked {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.source-form .form-actions {
+  padding: 1.1rem 1.25rem;
+}
+
 .ai-profile-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -437,6 +497,10 @@
   }
 
   .adapter-options {
+    grid-template-columns: 1fr;
+  }
+
+  .source-options {
     grid-template-columns: 1fr;
   }
 

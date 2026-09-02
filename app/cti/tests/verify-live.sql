@@ -2,8 +2,8 @@
 
 DO $$
 BEGIN
-    IF COALESCE((SELECT max(version) FROM cti.schema_versions), 0) < 28 THEN
-        RAISE EXCEPTION 'CTI schema version 28 is not installed.';
+    IF COALESCE((SELECT max(version) FROM cti.schema_versions), 0) < 29 THEN
+        RAISE EXCEPTION 'CTI schema version 29 is not installed.';
     END IF;
 
     IF has_table_privilege('cti_n8n', 'cti.articles', 'DELETE') THEN
@@ -30,7 +30,6 @@ BEGIN
         SELECT 1
         FROM cti.sources
         WHERE name = 'The Hacker News'
-          AND enabled = true
           AND feed_url = 'https://feeds.feedburner.com/TheHackersNews'
           AND allowed_hosts @> ARRAY['thehackernews.com', 'www.thehackernews.com']
     ) THEN
@@ -41,7 +40,6 @@ BEGIN
         SELECT 1
         FROM cti.sources
         WHERE name = 'CISA Cybersecurity Advisories'
-          AND enabled = true
           AND feed_url = 'https://www.cisa.gov/cybersecurity-advisories/all.xml'
           AND allowed_hosts @> ARRAY['cisa.gov', 'www.cisa.gov']
           AND content_selector = '.l-page-section--rich-text .l-page-section__content'
@@ -54,7 +52,6 @@ BEGIN
         SELECT 1
         FROM cti.sources
         WHERE name = 'Microsoft Security Blog'
-          AND enabled = true
           AND feed_url = 'https://www.microsoft.com/en-us/security/blog/feed/'
           AND allowed_hosts = ARRAY['www.microsoft.com', 'azure.microsoft.com']
           AND content_selector = '.entry-content'
@@ -67,7 +64,6 @@ BEGIN
         SELECT 1
         FROM cti.sources
         WHERE name = 'BleepingComputer'
-          AND enabled = true
           AND feed_url = 'https://www.bleepingcomputer.com/feed/'
           AND allowed_hosts = ARRAY['bleepingcomputer.com', 'www.bleepingcomputer.com']
           AND content_selector = '.articleBody'
@@ -80,7 +76,6 @@ BEGIN
         SELECT 1
         FROM cti.sources
         WHERE name = 'Cisco Talos'
-          AND enabled = true
           AND feed_url = 'https://blog.talosintelligence.com/rss/'
           AND allowed_hosts = ARRAY['blog.talosintelligence.com']
           AND content_selector = '.post-content'
@@ -93,7 +88,6 @@ BEGIN
         SELECT 1
         FROM cti.sources
         WHERE name = 'Krebs on Security'
-          AND enabled = true
           AND feed_url = 'https://krebsonsecurity.com/feed/'
           AND allowed_hosts = ARRAY['krebsonsecurity.com', 'www.krebsonsecurity.com']
           AND content_selector = '.entry-content'
@@ -116,6 +110,23 @@ BEGIN
           AND feed_url = 'https://www.securityweek.com/feed/'
     ) THEN
         RAISE EXCEPTION 'A reviewed but compatibility-disabled CTI source is missing.';
+    END IF;
+
+    IF (SELECT count(*) FROM cti.sources WHERE enabled) NOT BETWEEN 1 AND 6 OR
+       EXISTS (
+           SELECT 1
+           FROM cti.sources
+           WHERE enabled
+             AND name NOT IN (
+                 'The Hacker News',
+                 'CISA Cybersecurity Advisories',
+                 'Microsoft Security Blog',
+                 'BleepingComputer',
+                 'Cisco Talos',
+                 'Krebs on Security'
+             )
+       ) THEN
+        RAISE EXCEPTION 'The enabled reviewed-source selection is invalid.';
     END IF;
 
     IF NOT has_function_privilege(
@@ -177,7 +188,8 @@ BEGIN
        NOT has_table_privilege('cti_dashboard', 'cti.dashboard_reports', 'SELECT') OR
        NOT has_table_privilege('cti_dashboard', 'cti.dashboard_ai_usage', 'SELECT') OR
        NOT has_table_privilege('cti_dashboard', 'cti.dashboard_system_status', 'SELECT') OR
-       NOT has_table_privilege('cti_dashboard', 'cti.dashboard_ai_provider_status', 'SELECT') THEN
+       NOT has_table_privilege('cti_dashboard', 'cti.dashboard_ai_provider_status', 'SELECT') OR
+       NOT has_table_privilege('cti_dashboard', 'cti.dashboard_source_options', 'SELECT') THEN
         RAISE EXCEPTION 'The dashboard role cannot read its restricted views.';
     END IF;
 
@@ -218,6 +230,18 @@ BEGIN
 
     IF has_table_privilege('cti_dashboard', 'cti.dashboard_articles', 'UPDATE') THEN
         RAISE EXCEPTION 'The dashboard role unexpectedly has write access.';
+    END IF;
+
+    IF NOT has_function_privilege(
+        'cti_dashboard',
+        'cti.configure_reviewed_sources(text[])',
+        'EXECUTE'
+    ) OR has_function_privilege(
+        'cti_n8n',
+        'cti.configure_reviewed_sources(text[])',
+        'EXECUTE'
+    ) THEN
+        RAISE EXCEPTION 'The reviewed-source write capability is assigned incorrectly.';
     END IF;
 END;
 $$;
