@@ -35,7 +35,7 @@ version=0.1.0-rc.5
 base="https://github.com/emecyildiz/CTI/releases/download/v$version"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh.sha256"
-sha256sum --check "CTI-Setup-$version-linux.sh.sha256"
+sha256sum -c "CTI-Setup-$version-linux.sh.sha256"
 chmod +x "CTI-Setup-$version-linux.sh"
 ./CTI-Setup-$version-linux.sh
 ```

@@ -7,7 +7,7 @@ Each release contains a ZIP archive, a Windows x64 installer, a Linux installer,
 Place the ZIP and checksum file in the same directory:
 
 ```sh
-sha256sum --check cti-self-hosted-0.1.0-rc.5.zip.sha256
+sha256sum -c cti-self-hosted-0.1.0-rc.5.zip.sha256
 ```
 
 The command must report `OK`.
@@ -35,7 +35,7 @@ The final result must be `True`. The installer is currently unsigned, so checksu
 ### Linux installer
 
 ```sh
-sha256sum --check CTI-Setup-0.1.0-rc.5-linux.sh.sha256
+sha256sum -c CTI-Setup-0.1.0-rc.5-linux.sh.sha256
 ```
 
 The command must report `OK`. The Linux installer then performs a second checksum verification on the release ZIP before extracting it.

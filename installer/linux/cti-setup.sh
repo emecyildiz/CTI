@@ -119,7 +119,7 @@ download "$release_base/$archive_name" "$temporary_directory/$archive_name"
 download "$release_base/$checksum_name" "$temporary_directory/$checksum_name"
 
 printf 'Verifying SHA-256 checksum...\n'
-(cd "$temporary_directory" && sha256sum --check "$checksum_name")
+(cd "$temporary_directory" && sha256sum -c "$checksum_name")
 
 mkdir -p "$temporary_directory/extracted"
 unzip -q "$temporary_directory/$archive_name" -d "$temporary_directory/extracted"
