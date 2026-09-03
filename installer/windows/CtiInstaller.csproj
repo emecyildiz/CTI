@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CtiInstaller</AssemblyName>
+    <RootNamespace>CtiInstaller</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Authors>Emecworks</Authors>
+    <Product>CTI Self-Hosted Installer</Product>
+    <Description>Windows installer for CTI Self-Hosted.</Description>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(PayloadPath)' != ''">
+    <EmbeddedResource Include="$(PayloadPath)" LogicalName="CtiInstaller.Payload.zip" />
+  </ItemGroup>
+</Project>

@@ -12,7 +12,23 @@ The guided setup can deploy a local n8n container automatically. An existing n8n
 
 ## Guided installation from a release
 
-Download and extract the release ZIP. Do not run the installer from inside the ZIP archive.
+### Windows graphical installer
+
+Download `CTI-Setup-<version>-win-x64.exe` and its `.sha256` file from GitHub Releases. Verify the checksum, then start the EXE. The graphical installer:
+
+1. checks that Docker Desktop, Docker Compose v2, and the Docker engine are available;
+2. lets the user choose a safe installation directory;
+3. offers a managed local n8n container or an existing n8n instance;
+4. extracts the matching, versioned CTI package embedded in the EXE;
+5. runs the same reviewed `setup.ps1` installation path and streams its progress;
+6. preserves an existing `.env` during an update and refuses an unrelated non-empty destination;
+7. provides local dashboard and n8n links after a successful installation.
+
+The installer runs as the current user and does not request administrator elevation. Docker Desktop may independently require privileges during its own installation. The EXE is currently unsigned, so Windows SmartScreen may show an unrecognized-app warning; verify the published SHA-256 checksum before running it.
+
+### ZIP installation and non-Windows systems
+
+Download and extract the release ZIP. Do not run a setup script from inside the ZIP archive.
 
 On Windows, start `setup.cmd`. On Linux or macOS, run:
 
@@ -32,7 +48,7 @@ The guided installer:
 
 The user still creates the first local n8n owner account. The protected setup page can then select from the reviewed source catalog and create and map the operator-owned PostgreSQL, bundled Gemini, and optional Telegram credentials. Workflows are never activated automatically.
 
-Published GitHub releases contain a versioned ZIP, SHA-256 checksum, and JSON manifest. The release pipeline is triggered only by a matching version tag, validates the package, and builds the downloadable archive automatically.
+Published GitHub releases contain a versioned ZIP, its SHA-256 checksum, a JSON manifest, and a self-contained Windows x64 installer with a separate checksum. The release pipeline is triggered only by a matching version tag and builds both installation formats from that exact tagged commit.
 
 ## Manual installation or existing n8n
 
