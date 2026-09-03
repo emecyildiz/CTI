@@ -44,6 +44,8 @@ services:
       CTI_APPLICATION_NAME: cti-self-hosted-dashboard
       CTI_DASHBOARD_PASSWORD: ${CTI_DASHBOARD_PASSWORD:?set CTI_DASHBOARD_PASSWORD in .env}
       CTI_N8N_API_URL: ${CTI_N8N_API_URL:-http://cti-n8n:5678/api/v1}
+      CTI_TELEGRAM_QUERY_ENABLED: ${CTI_TELEGRAM_QUERY_ENABLED:-false}
+      CTI_TELEGRAM_WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
       CtiDatabase__Host: cti-db
       CtiDatabase__Name: ${POSTGRES_DB:-cti}
       CtiDatabase__Username: cti_dashboard
@@ -87,6 +89,8 @@ services:
       N8N_PORT: "5678"
       N8N_PROTOCOL: http
       N8N_LISTEN_ADDRESS: 0.0.0.0
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
+      N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-0}
       N8N_SECURE_COOKIE: "false"
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-}
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"

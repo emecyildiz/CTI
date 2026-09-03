@@ -42,7 +42,7 @@ An operator can replace those model nodes with another AI provider while preserv
 
 Feed collection, dashboard filtering, Telegram queries, retention, KEV synchronization, and EPSS enrichment do not require an AI API.
 
-## Telegram credential (optional)
+## Telegram integration (optional)
 
 The protected dashboard `/setup` page can create the bot credential, insert one authorized private user/chat ID, and map all expected Telegram nodes without activating a workflow. Public exports contain no personal chat identifier.
 
@@ -54,6 +54,21 @@ Use Telegram only if these optional workflows are needed:
 
 Review the configured private user/chat ID before activation. The query workflow requires both sender ID and private chat ID to match this value; group chats are intentionally excluded. Never publish the query bot without this authorization guard.
 
+Telegram has two different network requirements:
+
+- `CTI Weekly Telegram Delivery` and `n8n Workflow Error Alerts` make outbound API calls. They need the Telegram credential and destination, but no inbound public route.
+- `CTI Telegram Query` uses a Telegram Trigger. Telegram must be able to send updates to a stable public HTTPS URL routed to n8n.
+
+For managed n8n, configure the query URL during installation:
+
+```sh
+sh ./setup.sh --telegram-webhook-url https://hooks.example.com/
+```
+
+This records `CTI_TELEGRAM_QUERY_ENABLED=true`, sets n8n's `WEBHOOK_URL`, and defaults `N8N_PROXY_HOPS` to `1`. The URL must already be routed through a correctly configured TLS reverse proxy or tunnel. Keep the n8n editor private; expose only the production webhook path needed by Telegram. Do not place an interactive user-login challenge in front of Telegram's webhook requests.
+
+For an existing n8n installation, set `WEBHOOK_URL` and the correct `N8N_PROXY_HOPS` value in that n8n deployment, then set the matching `CTI_TELEGRAM_QUERY_ENABLED` and `N8N_WEBHOOK_URL` values in CTI's `.env` so the dashboard can report readiness. The dashboard validates configuration shape but does not create or probe external routing.
+
 ## Read-only activation audit
 
 Return to the protected dashboard `/setup` page after credential handoff and workflow mapping. In **Activation readiness**, enter a temporary n8n API key with only these scopes:
@@ -62,11 +77,12 @@ Return to the protected dashboard `/setup` page after credential handoff and wor
 - `workflow:list`
 - `workflow:read`
 
-Select AI and Telegram only when those optional components will be activated. The audit verifies:
+Select AI, outbound Telegram delivery, and interactive Telegram query only when those optional components will be activated. The audit verifies:
 
 - the reserved PostgreSQL credential and all 31 expected database-node mappings;
 - both Gemini model-node mappings when AI is selected;
-- all five Telegram mappings, the direct private-chat guard, and matching delivery destinations when Telegram is selected;
+- all five Telegram mappings, the direct private-chat guard, and matching delivery destinations when either Telegram mode is selected;
+- a configured non-local HTTPS webhook base when interactive Telegram query is selected;
 - all eight bundled workflows remain disabled, unpublished, and unarchived.
 
 The key is request-scoped and is not stored, reflected in HTML, or placed in a URL. The audit performs GET requests only. It never updates or activates a workflow.

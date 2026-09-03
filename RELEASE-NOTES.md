@@ -1,6 +1,6 @@
-# 0.1.0-rc.5
+# 0.1.0-rc.6
 
-Fifth release candidate adds a version-pinned terminal installer for Linux servers and brings the POSIX setup options in line with the Windows setup paths.
+Sixth release candidate makes interactive Telegram support an explicit, guarded opt-in instead of implying that a VPS installation alone is sufficient.
 
 Verified on 3 September 2026 with:
 
@@ -22,8 +22,15 @@ Verified on 3 September 2026 with:
 - interactive installation-directory and managed/existing-n8n choices plus non-interactive and prepare-only modes;
 - update-safe `.env` preservation and remote-server SSH tunnel guidance;
 - separate SHA-256 verification for the Linux installer.
+- separate readiness choices for outbound Telegram reports/alerts and inbound Telegram menu/query handling;
+- validated `WEBHOOK_URL` and bounded `N8N_PROXY_HOPS` configuration for managed n8n;
+- Linux installer prompting and non-interactive flags for an existing public HTTPS webhook route;
+- dashboard visibility for disabled, invalid, and configured Telegram query states;
+- an activation-readiness failure when interactive queries are selected without the required HTTPS configuration.
 
 The Linux bootstrap refuses unsupported operating systems and architectures, missing Docker/Compose access, unrelated non-empty destinations, checksum failures, unexpected archive layouts, and package-version mismatches. It never installs Docker silently or exposes CTI services to a public interface.
+
+The installer does not create DNS, TLS, Cloudflare Tunnel, or reverse-proxy rules. Outbound Telegram delivery remains usable without a public route. Interactive Telegram queries remain disabled unless the operator explicitly supplies a non-local HTTPS webhook base and confirms that the route reaches n8n.
 
 The Windows installer checks Docker Desktop, Docker Compose v2, and the Docker engine before enabling installation. It offers a managed n8n container or an existing n8n instance, refuses unrelated non-empty destination folders, preserves an existing `.env` during updates, streams setup progress, and links to the local dashboard after completion.
 

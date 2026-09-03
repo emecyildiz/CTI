@@ -34,6 +34,9 @@ jobs:
           grep -Fq "__CTI_TELEGRAM_ALLOWED_ID__" workflows/cti-telegram-query.json
           grep -Fq '"chatId": "__CTI_TELEGRAM_CHAT_ID__"' workflows/cti-weekly-telegram-delivery.json
           grep -Fq '"chatId": "__CTI_TELEGRAM_CHAT_ID__"' workflows/n8n-workflow-error-alerts.json
+          grep -Fq 'CTI_TELEGRAM_QUERY_ENABLED=false' .env.example
+          grep -Fq 'WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}' compose.yml
+          grep -Fq -- '--telegram-webhook-url' installer/linux/cti-setup.sh
           dotnet build app/cti-dashboard/CtiDashboard.csproj --configuration Release
           dotnet build installer/windows/CtiInstaller.csproj --configuration Release
 

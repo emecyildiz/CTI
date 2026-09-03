@@ -6,7 +6,8 @@ CTI Self-Hosted collects reviewed cybersecurity feeds, validates article URLs an
 
 - Docker Engine with Docker Compose v2
 - an AI API credential only when AI analysis/reporting will be enabled
-- a Telegram bot only if Telegram delivery/query workflows will be used
+- a Telegram bot only if Telegram delivery or query workflows will be used
+- a stable public HTTPS route to n8n only for the interactive Telegram query workflow
 
 The guided setup can deploy a local n8n container automatically. An existing n8n 2.x installation is also supported. The bundled workflow exports currently contain a Gemini model node, but the prompt and validated JSON contract are provider-independent; operators may replace that node with another AI provider.
 
@@ -31,7 +32,7 @@ The installer runs as the current user and does not request administrator elevat
 On a Linux server, download the versioned terminal installer and its checksum from GitHub Releases:
 
 ```sh
-version=0.1.0-rc.5
+version=0.1.0-rc.6
 base="https://github.com/emecyildiz/CTI/releases/download/v$version"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh.sha256"
@@ -42,11 +43,23 @@ chmod +x "CTI-Setup-$version-linux.sh"
 
 The Linux installer supports x86_64 and ARM64 hosts. It checks Docker access, downloads the matching release ZIP, verifies its SHA-256 checksum, asks for the installation directory and n8n mode, preserves an existing `.env`, and then runs the reviewed `setup.sh` path. On a remote server it prints an SSH port-forward command so the dashboard and n8n can remain bound to loopback.
 
+During an interactive managed-n8n installation, Telegram query support is presented as a separate opt-in feature. Leaving it disabled does not affect collection, the dashboard, or outbound Telegram reports and alerts. Enabling it requires the public HTTPS base URL that will route webhook traffic to n8n; the installer records this URL but does not create DNS, TLS, reverse-proxy, or tunnel configuration.
+
 For a non-interactive managed-n8n installation using the default directory:
 
 ```sh
-./CTI-Setup-0.1.0-rc.5-linux.sh --non-interactive
+./CTI-Setup-0.1.0-rc.6-linux.sh --non-interactive
 ```
+
+For a non-interactive server installation where a public HTTPS route already exists:
+
+```sh
+./CTI-Setup-0.1.0-rc.6-linux.sh \
+  --non-interactive \
+  --telegram-webhook-url https://hooks.example.com/
+```
+
+`--n8n-proxy-hops N` can override the default trusted reverse-proxy count of `1`. It must match the actual proxy path; do not increase it without understanding that path.
 
 Use `--existing-n8n` to install only the database and dashboard. The installer never opens the dashboard or n8n directly to the public Internet.
 
@@ -104,9 +117,9 @@ The separate workflow-mapping action binds that reserved credential only to the 
 
 The PostgreSQL handoff follows the same boundary. The user supplies the generated `CTI_APP_PASSWORD` once; the dashboard creates or updates `CTI Self-Hosted - PostgreSQL` for the restricted `cti_n8n` role at `cti-db:5432`. A separate guarded action maps it to exactly 31 expected database nodes across seven bundled workflows. Neither action stores the password in the CTI schema, and mapping refuses any unexpected workflow structure or active/published target.
 
-Optional Telegram setup creates the reserved `CTI Self-Hosted - Telegram` credential directly in n8n, then maps it to exactly five expected nodes in three disabled workflows. The operator supplies one numeric private user/chat ID: the query workflow requires both sender and chat IDs to match it, while weekly delivery and workflow-error alerts use the same destination. Public exports contain placeholders rather than a personal Telegram identifier.
+Optional Telegram setup creates the reserved `CTI Self-Hosted - Telegram` credential directly in n8n, then maps it to exactly five expected nodes in three disabled workflows. The operator supplies one numeric private user/chat ID: the query workflow requires both sender and chat IDs to match it, while weekly delivery and workflow-error alerts use the same destination. Public exports contain placeholders rather than a personal Telegram identifier. Outbound delivery works without exposing n8n. Interactive menu/query support remains disabled unless `CTI_TELEGRAM_QUERY_ENABLED=true` and `N8N_WEBHOOK_URL` contains a non-local HTTPS base URL.
 
-The final setup step is a read-only activation-readiness audit. Supply an n8n API key with only `credential:list`, `workflow:list`, and `workflow:read`, then select whether AI and Telegram will be enabled. The audit confirms the reserved credentials, all expected node mappings, the shared private Telegram destination when selected, and the disabled/unpublished/unarchived state of all eight bundled workflows. It does not update credentials, modify workflows, or activate anything; activation remains a deliberate one-workflow-at-a-time action in n8n.
+The final setup step is a read-only activation-readiness audit. Supply an n8n API key with only `credential:list`, `workflow:list`, and `workflow:read`, then select AI, outbound Telegram delivery, and interactive Telegram queries independently. The audit confirms the reserved credentials, expected node mappings, shared private Telegram destination, disabled workflow state, and the required query webhook configuration. It does not claim that DNS or route reachability has been tested, and it never activates a workflow.
 
 Source selection is limited to the catalog bundled with the release. The setup page can enable any non-empty subset of the six compatible reviewed sources, but it cannot accept arbitrary feed URLs or modify host allowlists, selectors, or trust scores. Dark Reading and SecurityWeek remain visible but cannot be enabled while their unattended article retrieval is incompatible.
 

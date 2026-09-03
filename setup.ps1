@@ -1,7 +1,11 @@
 [CmdletBinding()]
 param(
     [switch]$UseExistingN8n,
-    [switch]$SkipWorkflowImport
+    [switch]$SkipWorkflowImport,
+    [ValidatePattern('^https://')]
+    [string]$TelegramWebhookUrl,
+    [ValidateRange(0, 16)]
+    [int]$N8nProxyHops = 1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,6 +31,34 @@ function Invoke-Docker([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) {
         Stop-Setup "Docker command failed: docker $($Arguments -join ' ')"
     }
+}
+
+function Set-EnvironmentValue([string]$Key, [string]$Value) {
+    $path = Join-Path $PSScriptRoot '.env'
+    $lines = [Collections.Generic.List[string]](Get-Content -LiteralPath $path)
+    $updated = $false
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index].StartsWith("$Key=", [StringComparison]::Ordinal)) {
+            $lines[$index] = "$Key=$Value"
+            $updated = $true
+            break
+        }
+    }
+    if (-not $updated) { $lines.Add("$Key=$Value") }
+    [IO.File]::WriteAllLines($path, $lines, [Text.UTF8Encoding]::new($false))
+}
+
+if ($TelegramWebhookUrl) {
+    $webhookUri = $null
+    if (-not [Uri]::TryCreate($TelegramWebhookUrl, [UriKind]::Absolute, [ref]$webhookUri) -or
+        $webhookUri.Scheme -ne 'https' -or $webhookUri.UserInfo -or $webhookUri.Query -or
+        $webhookUri.Fragment -or $webhookUri.IsLoopback) {
+        Stop-Setup 'TelegramWebhookUrl must be a public HTTPS base URL without credentials, a query, or a fragment.'
+    }
+    if ($UseExistingN8n) {
+        Stop-Setup 'Configure WEBHOOK_URL on the existing n8n service itself; -TelegramWebhookUrl is for managed n8n only.'
+    }
+    $TelegramWebhookUrl = $TelegramWebhookUrl.TrimEnd('/') + '/'
 }
 
 Write-Step 'Checking prerequisites'
@@ -66,10 +98,19 @@ CTI_MANAGED_N8N=$managed
 N8N_PORT=5678
 N8N_TIMEZONE=Europe/Istanbul
 N8N_ENCRYPTION_KEY=$(New-Secret)
+CTI_TELEGRAM_QUERY_ENABLED=false
+N8N_WEBHOOK_URL=http://localhost:5678/
+N8N_PROXY_HOPS=0
 "@
     [IO.File]::WriteAllText((Join-Path $PSScriptRoot '.env'), $environment, [Text.UTF8Encoding]::new($false))
 } elseif (Select-String -LiteralPath '.env' -Pattern 'REPLACE_WITH_' -Quiet) {
     Stop-Setup '.env contains placeholder passwords. Replace them or remove .env and rerun setup.'
+}
+
+if ($TelegramWebhookUrl) {
+    Set-EnvironmentValue 'CTI_TELEGRAM_QUERY_ENABLED' 'true'
+    Set-EnvironmentValue 'N8N_WEBHOOK_URL' $TelegramWebhookUrl
+    Set-EnvironmentValue 'N8N_PROXY_HOPS' $N8nProxyHops.ToString([Globalization.CultureInfo]::InvariantCulture)
 }
 
 $managedN8n = -not $UseExistingN8n
@@ -155,4 +196,12 @@ if ($managedN8n) {
     Write-Host "`nCreate the first local n8n owner account, then use the protected dashboard setup page to map CTI credentials. Imported workflows remain disabled until you activate them."
 } else {
     Write-Host "`nThe CTI database/dashboard are ready. Follow N8N-SETUP.md to connect and import into your existing n8n instance."
+}
+$queryEnabled = $environmentValues['CTI_TELEGRAM_QUERY_ENABLED'] -eq 'true' -or [bool]$TelegramWebhookUrl
+if ($queryEnabled) {
+    $configuredWebhook = if ($TelegramWebhookUrl) { $TelegramWebhookUrl } else { $environmentValues['N8N_WEBHOOK_URL'] }
+    Write-Host "Interactive Telegram query: configured for $configuredWebhook" -ForegroundColor Yellow
+    Write-Host 'The HTTPS route must reach n8n before you activate CTI Telegram Query.'
+} else {
+    Write-Host 'Interactive Telegram query: disabled. Outbound reports and alerts can still be configured.'
 }

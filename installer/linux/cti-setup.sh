@@ -7,6 +7,8 @@ install_dir=
 use_existing_n8n=false
 non_interactive=false
 prepare_only=false
+telegram_webhook_url=
+telegram_proxy_hops=1
 
 fail() {
     printf '\nERROR: %s\n' "$1" >&2
@@ -25,6 +27,9 @@ Options:
   --existing-n8n      Do not deploy the bundled n8n container
   --non-interactive   Accept defaults without prompting
   --prepare-only      Verify and copy files without starting services
+  --telegram-webhook-url URL
+                      Enable interactive Telegram queries through this public HTTPS base URL
+  --n8n-proxy-hops N  Trusted reverse-proxy count for n8n (default: 1)
   --help              Show this help
 EOF
 }
@@ -39,6 +44,16 @@ while [ "$#" -gt 0 ]; do
         --existing-n8n) use_existing_n8n=true ;;
         --non-interactive) non_interactive=true ;;
         --prepare-only) prepare_only=true ;;
+        --telegram-webhook-url)
+            [ "$#" -ge 2 ] || fail '--telegram-webhook-url requires an HTTPS URL.'
+            telegram_webhook_url=$2
+            shift
+            ;;
+        --n8n-proxy-hops)
+            [ "$#" -ge 2 ] || fail '--n8n-proxy-hops requires a number.'
+            telegram_proxy_hops=$2
+            shift
+            ;;
         --help) usage; exit 0 ;;
         *) fail "Unknown option: $1" ;;
     esac
@@ -64,6 +79,7 @@ if [ "$prepare_only" != "true" ]; then
         fail 'The Docker daemon is stopped or inaccessible.'
     }
 fi
+
 command -v sha256sum >/dev/null 2>&1 || fail 'sha256sum is required.'
 command -v unzip >/dev/null 2>&1 || fail 'unzip is required. Install the unzip package and retry.'
 
@@ -90,6 +106,24 @@ if [ -z "$install_dir" ]; then
         IFS= read -r answer
         case "$answer" in n|N|no|NO|No) use_existing_n8n=true ;; esac
     fi
+fi
+
+if [ "$use_existing_n8n" = "true" ] && [ -n "$telegram_webhook_url" ]; then
+    fail 'Configure WEBHOOK_URL on the existing n8n service itself; this option configures only managed n8n.'
+fi
+
+if [ -z "$telegram_webhook_url" ] && [ "$use_existing_n8n" != "true" ] && \
+   [ "$non_interactive" != "true" ] && [ "$prepare_only" != "true" ] && [ -t 0 ]; then
+    printf '\nInteractive Telegram query receives commands through a public HTTPS webhook.\n'
+    printf 'Outbound weekly reports and error alerts do not require this address.\n'
+    printf 'Configure interactive Telegram query now? [y/N]: '
+    IFS= read -r answer
+    case "$answer" in
+        y|Y|yes|YES|Yes)
+            printf 'Public HTTPS webhook base URL (example: https://hooks.example.com/): '
+            IFS= read -r telegram_webhook_url
+            ;;
+    esac
 fi
 
 case "$install_dir" in
@@ -156,11 +190,15 @@ if [ "$prepare_only" = "true" ]; then
 fi
 
 printf 'Starting CTI setup...\n'
+set --
 if [ "$use_existing_n8n" = "true" ]; then
-    (cd "$install_dir" && sh ./setup.sh --existing-n8n --skip-workflow-import)
+    set -- --existing-n8n --skip-workflow-import
 else
-    (cd "$install_dir" && sh ./setup.sh)
+    if [ -n "$telegram_webhook_url" ]; then
+        set -- --telegram-webhook-url "$telegram_webhook_url" --n8n-proxy-hops "$telegram_proxy_hops"
+    fi
 fi
+(cd "$install_dir" && sh ./setup.sh "$@")
 
 printf '\nInstallation complete.\n'
 printf 'Files:     %s\n' "$install_dir"
@@ -170,3 +208,8 @@ if [ "$use_existing_n8n" != "true" ]; then
 fi
 printf '\nFor a remote server, keep both services private and open an SSH tunnel from your computer:\n'
 printf 'ssh -L 8080:127.0.0.1:8080 -L 5678:127.0.0.1:5678 USER@SERVER\n'
+if [ -z "$telegram_webhook_url" ]; then
+    printf '\nInteractive Telegram query was left disabled. This is expected; outbound reports and alerts can still work.\n'
+else
+    printf '\nInteractive Telegram query is configured but not activated. Confirm that %s routes to n8n, then finish the dashboard readiness audit.\n' "$telegram_webhook_url"
+fi

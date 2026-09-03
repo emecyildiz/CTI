@@ -41,6 +41,7 @@ if (authenticationMode is not ("cloudflare" or "local"))
 {
     throw new InvalidOperationException("CTI_AUTH_MODE must be either 'cloudflare' or 'local'.");
 }
+var telegramRuntime = ReadTelegramRuntimeStatus(builder.Configuration);
 
 var expectedAccessEmail = authenticationMode == "cloudflare"
     ? builder.Configuration["CTI_ACCESS_EMAIL"]
@@ -173,6 +174,7 @@ app.MapGet("/setup", async (
             sourceOptions,
             aiProvider,
             n8nStatus,
+            telegramRuntime,
             csrfToken,
             result,
             GetAuthenticatedIdentity(context)),
@@ -740,11 +742,16 @@ app.MapPost("/setup/readiness", async (
     }
 
     var includeAi = string.Equals(form["include_ai"].FirstOrDefault(), "true", StringComparison.Ordinal);
-    var includeTelegram = string.Equals(form["include_telegram"].FirstOrDefault(), "true", StringComparison.Ordinal);
+    var includeTelegramDelivery = string.Equals(
+        form["include_telegram_delivery"].FirstOrDefault(), "true", StringComparison.Ordinal);
+    var includeTelegramQuery = string.Equals(
+        form["include_telegram_query"].FirstOrDefault(), "true", StringComparison.Ordinal);
     var readiness = await n8nProbe.AuditReadinessAsync(
         n8nApiKey,
         includeAi,
-        includeTelegram,
+        includeTelegramDelivery || includeTelegramQuery,
+        includeTelegramQuery,
+        telegramRuntime,
         cancellationToken);
 
     return readiness.Status switch
@@ -952,6 +959,19 @@ app.MapGet("/reports", async (
 
 app.Run();
 
+static TelegramRuntimeStatus ReadTelegramRuntimeStatus(IConfiguration configuration)
+{
+    var enabled = bool.TryParse(configuration["CTI_TELEGRAM_QUERY_ENABLED"], out var parsed) && parsed;
+    var configuredUrl = configuration["CTI_TELEGRAM_WEBHOOK_URL"]?.Trim();
+    var validPublicHttpsUrl = Uri.TryCreate(configuredUrl, UriKind.Absolute, out var uri) &&
+                              string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+                              string.IsNullOrEmpty(uri.UserInfo) &&
+                              string.IsNullOrEmpty(uri.Query) &&
+                              string.IsNullOrEmpty(uri.Fragment) &&
+                              !uri.IsLoopback;
+    return new TelegramRuntimeStatus(enabled, configuredUrl, enabled && validPublicHttpsUrl);
+}
+
 static string GetOrCreateSetupCsrfToken(HttpContext context)
 {
     const string cookieName = "cti_setup_csrf";
@@ -1078,6 +1098,9 @@ internal sealed record AiProviderStatus(
     bool ProfileDefined, string? ProviderKey, string? ProviderLabel,
     string? AdapterKey, string? ModelIdentifier, string? ApiBaseUrl,
     string AdapterStatus, DateTime? UpdatedAt);
+
+internal sealed record TelegramRuntimeStatus(
+    bool QueryEnabled, string? PublicWebhookUrl, bool QueryConfigurationReady);
 
 internal sealed record N8nHandoffStatus(
     bool Reachable,
@@ -1482,6 +1505,8 @@ internal sealed class N8nHandoffProbe : IDisposable
         string n8nApiKey,
         bool includeAi,
         bool includeTelegram,
+        bool includeTelegramQuery,
+        TelegramRuntimeStatus telegramRuntime,
         CancellationToken cancellationToken)
     {
         await credentialLock.WaitAsync(cancellationToken);
@@ -1632,7 +1657,28 @@ internal sealed class N8nHandoffProbe : IDisposable
                     "Telegram credential, mappings, and authorization",
                     "Skipped",
                     true,
-                    "Private Telegram query and delivery were not selected for this audit."));
+                    "No Telegram component was selected for this audit."));
+            }
+
+            if (includeTelegramQuery)
+            {
+                components.Add(new N8nReadinessComponent(
+                    "Interactive Telegram webhook",
+                    telegramRuntime.QueryConfigurationReady ? "Ready" : "Not ready",
+                    telegramRuntime.QueryConfigurationReady,
+                    telegramRuntime.QueryConfigurationReady
+                        ? $"Incoming Telegram updates are configured for {telegramRuntime.PublicWebhookUrl}. Route reachability must still be tested before activation."
+                        : telegramRuntime.QueryEnabled
+                            ? "Interactive query was enabled, but its public webhook base URL is not a valid non-local HTTPS URL."
+                            : "Interactive query is disabled. Configure a public HTTPS webhook URL in the installer or environment before selecting this component."));
+            }
+            else
+            {
+                components.Add(new N8nReadinessComponent(
+                    "Interactive Telegram webhook",
+                    "Skipped",
+                    true,
+                    "Incoming bot commands were not selected. Outbound Telegram delivery does not require a public webhook URL."));
             }
 
             var ready = components.All(component => component.Satisfied);
@@ -2753,6 +2799,7 @@ internal static class HtmlPages
         IReadOnlyList<SetupSourceOption> sourceOptions,
         AiProviderStatus aiProvider,
         N8nHandoffStatus n8nStatus,
+        TelegramRuntimeStatus telegramRuntime,
         string csrfToken,
         string? result,
         string email)
@@ -2786,6 +2833,13 @@ internal static class HtmlPages
         var selectedProvider = aiProvider.ProviderKey ?? "google_gemini";
         var selectedModel = aiProvider.ModelIdentifier ?? "models/gemini-3.6-flash";
         var selectedEndpoint = aiProvider.ApiBaseUrl ?? string.Empty;
+        var telegramQueryState = telegramRuntime.QueryConfigurationReady
+            ? "Configured"
+            : telegramRuntime.QueryEnabled ? "Invalid configuration" : "Disabled";
+        var telegramQueryClass = telegramRuntime.QueryConfigurationReady ? "ready" : "warning";
+        var telegramWebhookLabel = telegramRuntime.QueryConfigurationReady
+            ? telegramRuntime.PublicWebhookUrl!
+            : "No public HTTPS webhook configured";
         var savedNotice = result switch
         {
             "saved" => "<aside class=\"setup-result\"><strong>AI profile saved.</strong><span>No credential or workflow state was changed.</span></aside>",
@@ -2898,7 +2952,7 @@ internal static class HtmlPages
                 <form class="credential-form readiness-form" method="post" action="/setup/readiness" autocomplete="off">
                   <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
                   <label>Read-only n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
-                  <fieldset><legend>Components intended for activation</legend><label class="check-option"><input type="checkbox" name="include_ai" value="true" checked> AI analysis and weekly reporting</label><label class="check-option"><input type="checkbox" name="include_telegram" value="true"> Private Telegram query and delivery</label></fieldset>
+                  <fieldset><legend>Components intended for activation</legend><label class="check-option"><input type="checkbox" name="include_ai" value="true" checked> AI analysis and weekly reporting</label><label class="check-option"><input type="checkbox" name="include_telegram_delivery" value="true"> Telegram reports and error alerts (outbound)</label><label class="check-option"><input type="checkbox" name="include_telegram_query" value="true"> Interactive Telegram menu and queries (requires public HTTPS)</label></fieldset>
                   <div class="credential-guidance"><p>This audit needs only <code>credential:list</code>, <code>workflow:list</code>, and <code>workflow:read</code>. It performs no writes and never activates a workflow.</p><button type="submit">Run read-only audit</button></div>
                 </form>
                 """
@@ -2987,8 +3041,13 @@ internal static class HtmlPages
               </div>
             </section>
             <section class="setup-panel telegram-panel">
-              <div class="setup-heading"><div><p class="eyebrow">STEP 03 · OPTIONAL</p><h2>Private Telegram delivery</h2></div><span class="check-state warning">Disabled by default</span></div>
-              <p class="section-intro">Telegram remains optional. The public exports contain no personal chat identifier, and the query workflow authorizes one direct private user/chat before activation.</p>
+              <div class="setup-heading"><div><p class="eyebrow">STEP 03 · OPTIONAL</p><h2>Private Telegram integration</h2></div><span class="check-state warning">Disabled by default</span></div>
+              <p class="section-intro">Reports and error alerts are outbound and need no public route. The interactive menu receives Telegram updates through n8n and therefore needs a stable public HTTPS webhook before its workflow can be activated.</p>
+              <div class="system-grid">
+                <article><span>Reports and alerts</span><strong>Outbound only</strong><small>A bot token and private destination are sufficient.</small></article>
+                <article><span>Interactive menu and queries</span><strong class="{{telegramQueryClass}}">{{E(telegramQueryState)}}</strong><small>{{E(telegramWebhookLabel)}}</small></article>
+                <article><span>Public routing</span><strong>Operator managed</strong><small>The installer records the URL; it does not create DNS, TLS, reverse-proxy, or tunnel routes.</small></article>
+              </div>
               <div class="handoff-section database-handoff-section">
                 <div class="setup-heading"><div><p class="eyebrow">TELEGRAM CREDENTIAL HANDOFF</p><h3>Operator-owned bot token</h3></div></div>
                 {{telegramCredentialForm}}
@@ -3000,7 +3059,7 @@ internal static class HtmlPages
             </section>
             <section class="setup-panel readiness-panel">
               <div class="setup-heading"><div><p class="eyebrow">STEP 04</p><h2>Activation readiness</h2></div><span class="check-state warning">Read only</span></div>
-              <p class="section-intro">Confirm the reserved credentials, all expected node mappings, the optional Telegram boundary, and the disabled state of every bundled workflow before manual activation.</p>
+              <p class="section-intro">Select outbound Telegram delivery and interactive Telegram queries separately. The query option cannot pass while its public HTTPS webhook configuration is missing.</p>
               {{readinessForm}}
             </section>
             """);
