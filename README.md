@@ -28,7 +28,33 @@ The installer runs as the current user and does not request administrator elevat
 
 ### ZIP installation and non-Windows systems
 
-Download and extract the release ZIP. Do not run a setup script from inside the ZIP archive.
+On a Linux server, download the versioned terminal installer and its checksum from GitHub Releases:
+
+```sh
+version=0.1.0-rc.5
+base="https://github.com/emecyildiz/CTI/releases/download/v$version"
+curl -fsSLO "$base/CTI-Setup-$version-linux.sh"
+curl -fsSLO "$base/CTI-Setup-$version-linux.sh.sha256"
+sha256sum --check "CTI-Setup-$version-linux.sh.sha256"
+chmod +x "CTI-Setup-$version-linux.sh"
+./CTI-Setup-$version-linux.sh
+```
+
+The Linux installer supports x86_64 and ARM64 hosts. It checks Docker access, downloads the matching release ZIP, verifies its SHA-256 checksum, asks for the installation directory and n8n mode, preserves an existing `.env`, and then runs the reviewed `setup.sh` path. On a remote server it prints an SSH port-forward command so the dashboard and n8n can remain bound to loopback.
+
+For a non-interactive managed-n8n installation using the default directory:
+
+```sh
+./CTI-Setup-0.1.0-rc.5-linux.sh --non-interactive
+```
+
+Use `--existing-n8n` to install only the database and dashboard. The installer never opens the dashboard or n8n directly to the public Internet.
+
+Use `--prepare-only` to download, verify, and copy the package without starting any services. This allows the files to be reviewed before `setup.sh` is run manually.
+
+Advanced offline or internal-mirror installations may set `CTI_RELEASE_BASE` to an HTTPS location or a local `file://` directory containing the matching ZIP and checksum. Plain HTTP mirrors are rejected.
+
+Alternatively, download and extract the release ZIP. Do not run a setup script from inside the ZIP archive.
 
 On Windows, start `setup.cmd`. On Linux or macOS, run:
 
@@ -48,7 +74,7 @@ The guided installer:
 
 The user still creates the first local n8n owner account. The protected setup page can then select from the reviewed source catalog and create and map the operator-owned PostgreSQL, bundled Gemini, and optional Telegram credentials. Workflows are never activated automatically.
 
-Published GitHub releases contain a versioned ZIP, its SHA-256 checksum, a JSON manifest, and a self-contained Windows x64 installer with a separate checksum. The release pipeline is triggered only by a matching version tag and builds both installation formats from that exact tagged commit.
+Published GitHub releases contain a versioned ZIP, its SHA-256 checksum, a JSON manifest, a self-contained Windows x64 installer, and a version-pinned Linux installer. Both installers have separate checksums. The release pipeline is triggered only by a matching version tag and builds every installation format from that exact tagged commit.
 
 ## Manual installation or existing n8n
 

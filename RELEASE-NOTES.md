@@ -1,6 +1,6 @@
-# 0.1.0-rc.4
+# 0.1.0-rc.5
 
-Fourth release candidate adds a self-contained graphical installer for Windows x64 while preserving the existing ZIP, PowerShell, and POSIX installation paths.
+Fifth release candidate adds a version-pinned terminal installer for Linux servers and brings the POSIX setup options in line with the Windows setup paths.
 
 Verified on 3 September 2026 with:
 
@@ -17,7 +17,13 @@ Verified on 3 September 2026 with:
 - release ZIP generation with required-file inspection, SHA-256 checksum, and JSON manifest;
 - a single-file Windows x64 installer built from the exact tagged release ZIP;
 - embedded-payload extraction and package-copy smoke testing from the compiled EXE;
-- separate SHA-256 verification for the Windows installer.
+- separate SHA-256 verification for the Windows installer;
+- a Linux x86_64/ARM64 bootstrap that downloads and verifies the exact tagged release ZIP;
+- interactive installation-directory and managed/existing-n8n choices plus non-interactive and prepare-only modes;
+- update-safe `.env` preservation and remote-server SSH tunnel guidance;
+- separate SHA-256 verification for the Linux installer.
+
+The Linux bootstrap refuses unsupported operating systems and architectures, missing Docker/Compose access, unrelated non-empty destinations, checksum failures, unexpected archive layouts, and package-version mismatches. It never installs Docker silently or exposes CTI services to a public interface.
 
 The Windows installer checks Docker Desktop, Docker Compose v2, and the Docker engine before enabling installation. It offers a managed n8n container or an existing n8n instance, refuses unrelated non-empty destination folders, preserves an existing `.env` during updates, streams setup progress, and links to the local dashboard after completion.
 

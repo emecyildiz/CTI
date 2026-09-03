@@ -4,6 +4,24 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$script_dir"
 
+use_existing_n8n=false
+skip_workflow_import=false
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --existing-n8n) use_existing_n8n=true ;;
+        --skip-workflow-import) skip_workflow_import=true ;;
+        --help)
+            printf 'Usage: ./setup.sh [--existing-n8n] [--skip-workflow-import]\n'
+            exit 0
+            ;;
+        *)
+            printf 'ERROR: unknown option: %s\n' "$1" >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+
 fail() {
     printf 'ERROR: %s\n' "$1" >&2
     exit 1
@@ -23,6 +41,12 @@ docker info >/dev/null 2>&1 || fail 'The Docker daemon is not running or is not 
 
 if [ ! -f .env ]; then
     printf 'Creating a private local configuration...\n'
+    managed_n8n=true
+    n8n_container=cti-n8n
+    if [ "$use_existing_n8n" = "true" ]; then
+        managed_n8n=false
+        n8n_container=
+    fi
     cat > .env <<EOF
 POSTGRES_DB=cti
 POSTGRES_USER=cti_owner
@@ -34,8 +58,8 @@ CTI_DASHBOARD_PORT=8080
 CTI_NETWORK_NAME=cti-self-hosted
 CTI_COMPOSE_PROJECT_NAME=cti-self-hosted
 CTI_N8N_API_URL=http://cti-n8n:5678/api/v1
-N8N_CONTAINER=cti-n8n
-CTI_MANAGED_N8N=true
+N8N_CONTAINER=$n8n_container
+CTI_MANAGED_N8N=$managed_n8n
 N8N_PORT=5678
 N8N_TIMEZONE=${TZ:-UTC}
 N8N_ENCRYPTION_KEY=$(secret)
@@ -45,26 +69,33 @@ fi
 
 sh ./scripts/install.sh
 
-n8n_container=$(sed -n 's/^N8N_CONTAINER=//p' .env | head -n 1)
-n8n_container=${n8n_container:-cti-n8n}
-attempt=0
-until docker exec "$n8n_container" n8n --version >/dev/null 2>&1; do
-    attempt=$((attempt + 1))
-    [ "$attempt" -lt 60 ] || fail 'The managed n8n service did not become ready in time.'
-    sleep 2
-done
+managed_n8n=$(sed -n 's/^CTI_MANAGED_N8N=//p' .env | head -n 1)
+if [ "$managed_n8n" = "true" ]; then
+    n8n_container=$(sed -n 's/^N8N_CONTAINER=//p' .env | head -n 1)
+    n8n_container=${n8n_container:-cti-n8n}
+    attempt=0
+    until docker exec "$n8n_container" n8n --version >/dev/null 2>&1; do
+        attempt=$((attempt + 1))
+        [ "$attempt" -lt 60 ] || fail 'The managed n8n service did not become ready in time.'
+        sleep 2
+    done
 
-if ! docker exec "$n8n_container" sh -c \
-    'test -f /home/node/.n8n/.cti-workflows-imported-v1'; then
-    printf 'Importing disabled CTI workflows...\n'
-    CTI_IMPORT_CONFIRM=IMPORT_DISABLED_WORKFLOWS sh ./scripts/import-workflows.sh
-    docker exec "$n8n_container" sh -c \
-        'touch /home/node/.n8n/.cti-workflows-imported-v1'
+    if [ "$skip_workflow_import" != "true" ] && ! docker exec "$n8n_container" sh -c \
+        'test -f /home/node/.n8n/.cti-workflows-imported-v1'; then
+        printf 'Importing disabled CTI workflows...\n'
+        CTI_IMPORT_CONFIRM=IMPORT_DISABLED_WORKFLOWS sh ./scripts/import-workflows.sh
+        docker exec "$n8n_container" sh -c \
+            'touch /home/node/.n8n/.cti-workflows-imported-v1'
+    fi
 fi
 
 printf '\nCTI Self-Hosted is running.\n'
 dashboard_port=$(sed -n 's/^CTI_DASHBOARD_PORT=//p' .env | head -n 1)
 n8n_port=$(sed -n 's/^N8N_PORT=//p' .env | head -n 1)
 printf 'Dashboard: http://127.0.0.1:%s\n' "${dashboard_port:-8080}"
-printf 'n8n:       http://127.0.0.1:%s\n' "${n8n_port:-5678}"
-printf 'Create the first n8n owner account, then use the protected dashboard setup page to map CTI credentials.\n'
+if [ "$managed_n8n" = "true" ]; then
+    printf 'n8n:       http://127.0.0.1:%s\n' "${n8n_port:-5678}"
+    printf 'Create the first n8n owner account, then use the protected dashboard setup page to map CTI credentials.\n'
+else
+    printf 'Connect the existing n8n instance to the CTI network, then follow N8N-SETUP.md.\n'
+fi

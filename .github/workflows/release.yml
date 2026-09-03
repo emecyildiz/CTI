@@ -29,7 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           docker compose --env-file .env.example --profile managed-n8n config --quiet
-          for script in setup.sh scripts/*.sh; do sh -n "$script"; done
+          for script in setup.sh scripts/*.sh installer/linux/*.sh; do sh -n "$script"; done
           for workflow in workflows/*.json; do jq empty "$workflow"; done
           grep -Fq "__CTI_TELEGRAM_ALLOWED_ID__" workflows/cti-telegram-query.json
           grep -Fq '"chatId": "__CTI_TELEGRAM_CHAT_ID__"' workflows/cti-weekly-telegram-delivery.json
@@ -40,6 +40,10 @@ jobs:
       - name: Build checksummed release archive
         shell: bash
         run: sh ./scripts/build-release.sh dist
+
+      - name: Build checksummed Linux installer
+        shell: bash
+        run: sh ./scripts/build-linux-installer.sh dist
 
       - name: Build checksummed Windows installer
         shell: bash
