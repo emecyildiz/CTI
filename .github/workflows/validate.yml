@@ -1,0 +1,35 @@
+name: Validate CTI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  application-and-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Setup input and dashboard security boundaries
+        run: |
+          sh tests/setup-inputs.sh
+          dotnet run --project tests/dashboard-boundary/DashboardBoundary.Tests.csproj --configuration Release
+          dotnet build app/cti-dashboard/CtiDashboard.csproj --configuration Release --warnaserror
+      - name: Isolated SQL and recovery regression
+        run: sh scripts/tests/recovery.sh
+  windows-setup:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: PowerShell setup security boundaries
+        shell: powershell
+        run: ./tests/setup-inputs.ps1

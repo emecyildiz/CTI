@@ -208,14 +208,20 @@ Before a restore, disable all imported CTI workflows so they cannot write during
 ```sh
 CTI_RESTORE_CONFIRM=RESTORE_CTIDB \
 CTI_RESTORE_WORKFLOWS_DISABLED=YES \
-sh ./scripts/restore.sh ./backups/cti-YYYYMMDDTHHMMSSZ.dump
+sh ./scripts/restore.sh ./backups/cti-YYYYMMDDTHHMMSSZ-XXXXXX.dump
 ```
 
-The dashboard is stopped during `pg_restore` and restarted afterward. If a checksum file exists beside the dump, it is verified before any database change.
+The dashboard is stopped during `pg_restore` and restarted afterward. Restore runs in a single database transaction: an SQL or archive-read failure rolls back the database changes. Backup filenames include a unique suffix so a same-second safety backup cannot overwrite the selected input. If a checksum file exists beside the dump, it is verified before any database change.
 
 ## Exposure warning
 
-The local authentication mode trusts the loopback binding. Never publish the dashboard port directly to the internet. Use an authenticated reverse proxy or VPN when remote access is required.
+Local mode has no user login: it relies on the loopback binding and accepts only `localhost`, `127.0.0.1`, or `[::1]` Host headers, including custom SSH-forwarding ports. This blocks browser DNS rebinding through an unrelated hostname. Never publish the dashboard port directly to the internet. For remote access, prefer an SSH tunnel. An authenticated reverse proxy must also send a permitted loopback Host upstream; Cloudflare mode has its separate authentication configuration.
+
+## Development validation
+
+Run `sh tests/setup-inputs.sh`, `powershell -NoProfile -File tests/setup-inputs.ps1` on Windows, and `dotnet run --project tests/dashboard-boundary/DashboardBoundary.Tests.csproj`. These cover setup input injection, configuration preservation, local Host checks, public webhook URL shape, and modified Telegram authorization workflows.
+
+`sh scripts/tests/recovery.sh` requires Docker Compose and uses a unique temporary project with an internal network and no published ports. It runs each SQL scenario against a separate database cloned from the current schema, then checks backup-name collisions, failed-restore rollback, and successful restore/role grants. Its dashboard container is a lifecycle stub; this test does not claim to verify dashboard HTTP behavior, external routing, or a complete n8n installation. Temporary test containers, volumes and files are removed on exit. The CI validation workflow runs these regressions and gates release builds.
 
 ## License
 

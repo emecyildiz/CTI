@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Compile Include="../../app/cti-dashboard/LocalRequestBoundary.cs" Link="LocalRequestBoundary.cs" />
+    <Compile Include="../../app/cti-dashboard/TelegramSetupBoundary.cs" Link="TelegramSetupBoundary.cs" />
+    <None Include="../../workflows/cti-telegram-query.json" Link="cti-telegram-query.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

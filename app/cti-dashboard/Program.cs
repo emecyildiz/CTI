@@ -51,6 +51,13 @@ var expectedAccessEmail = authenticationMode == "cloudflare"
 
 app.Use(async (context, next) =>
 {
+    if (authenticationMode == "local" && !LocalRequestBoundary.IsAllowedHost(context.Request.Host))
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsync("Use a loopback dashboard address in local authentication mode.");
+        return;
+    }
+
     if (context.Request.Path.StartsWithSegments("/health"))
     {
         await next();
@@ -962,13 +969,8 @@ app.Run();
 static TelegramRuntimeStatus ReadTelegramRuntimeStatus(IConfiguration configuration)
 {
     var enabled = bool.TryParse(configuration["CTI_TELEGRAM_QUERY_ENABLED"], out var parsed) && parsed;
-    var configuredUrl = configuration["CTI_TELEGRAM_WEBHOOK_URL"]?.Trim();
-    var validPublicHttpsUrl = Uri.TryCreate(configuredUrl, UriKind.Absolute, out var uri) &&
-                              string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-                              string.IsNullOrEmpty(uri.UserInfo) &&
-                              string.IsNullOrEmpty(uri.Query) &&
-                              string.IsNullOrEmpty(uri.Fragment) &&
-                              !uri.IsLoopback;
+    var configuredUrl = configuration["CTI_TELEGRAM_WEBHOOK_URL"];
+    var validPublicHttpsUrl = TelegramSetupBoundary.IsPublicWebhookUrl(configuredUrl);
     return new TelegramRuntimeStatus(enabled, configuredUrl, enabled && validPublicHttpsUrl);
 }
 
@@ -1194,10 +1196,6 @@ internal sealed class N8nHandoffProbe : IDisposable
     private const int MaximumResponseBytes = 262144;
     private static readonly Regex TelegramAllowedIdAssignment = new(
         @"const allowedId = '(?:__CTI_TELEGRAM_ALLOWED_ID__|[0-9]{5,20})';",
-        RegexOptions.CultureInvariant,
-        TimeSpan.FromMilliseconds(100));
-    private static readonly Regex TelegramConfiguredAllowedId = new(
-        @"const allowedId = '(?<id>[0-9]{5,20})';",
         RegexOptions.CultureInvariant,
         TimeSpan.FromMilliseconds(100));
     private static readonly Regex TelegramChatIdValue = new(
@@ -1805,29 +1803,11 @@ internal sealed class N8nHandoffProbe : IDisposable
     {
         chatId = null;
         if (!workflows.TryGetValue("CTI Telegram Query", out var queryWorkflow) ||
-            queryWorkflow["nodes"] is not JsonArray queryNodes)
+            !TelegramSetupBoundary.IsReviewedQuery(queryWorkflow, true, out chatId))
         {
             return false;
         }
 
-        var authorizationNode = RequiredWorkflowNode(
-            queryNodes,
-            "Authorize and Parse Request",
-            "n8n-nodes-base.code");
-        if (authorizationNode["parameters"] is not JsonObject authorizationParameters)
-        {
-            return false;
-        }
-
-        var source = OptionalString(authorizationParameters, "jsCode") ?? string.Empty;
-        var matches = TelegramConfiguredAllowedId.Matches(source);
-        if (matches.Count != 1 ||
-            !source.Contains("fromId !== allowedId || chatId !== allowedId", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        chatId = matches[0].Groups["id"].Value;
         return TelegramSendTargetMatches(
                    workflows,
                    "CTI Weekly Telegram Delivery",
@@ -2173,6 +2153,12 @@ internal sealed class N8nHandoffProbe : IDisposable
         N8nPreparedWorkflow workflow,
         string authorizedChatId)
     {
+        if (workflow.WorkflowName == "CTI Telegram Query" &&
+            !TelegramSetupBoundary.IsReviewedQuery(workflow.Payload, false, out _))
+        {
+            throw new N8nWorkflowSafetyException(
+                "CTI Telegram Query authorization code, enabled nodes, or connections differ from the reviewed template.");
+        }
         if (workflow.Payload["nodes"] is not JsonArray nodes)
         {
             throw new JsonException("Telegram workflow nodes are missing.");
@@ -2373,19 +2359,8 @@ internal sealed class N8nHandoffProbe : IDisposable
 
         if (string.Equals(expected.WorkflowName, "CTI Telegram Query", StringComparison.Ordinal))
         {
-            var node = RequiredWorkflowNode(
-                nodes,
-                "Authorize and Parse Request",
-                "n8n-nodes-base.code");
-            if (node["parameters"] is not JsonObject parameters)
-            {
-                return false;
-            }
-
-            var source = OptionalString(parameters, "jsCode") ?? string.Empty;
-            var matches = TelegramAllowedIdAssignment.Matches(source);
-            return matches.Count == 1 &&
-                   string.Equals(matches[0].Value, $"const allowedId = '{chatId}';", StringComparison.Ordinal);
+            return TelegramSetupBoundary.IsReviewedQuery(workflow, true, out var configuredId) &&
+                   string.Equals(configuredId, chatId, StringComparison.Ordinal);
         }
 
         var targetNodeName = string.Equals(

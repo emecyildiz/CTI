@@ -32,11 +32,11 @@ BEGIN
         FROM cti.sources
         WHERE id = source_id_value
           AND last_checked_at IS NOT NULL
-          AND last_error_at IS NULL
+          AND last_error_at = last_checked_at
           AND last_error_code = 'feed_read_failed'
           AND last_success_at IS NULL
     ) THEN
-        RAISE EXCEPTION 'Provisional source failure was not recorded safely.';
+        RAISE EXCEPTION 'Source failure was not recorded with its own error timestamp.';
     END IF;
 
     PERFORM cti.record_source_check(source_id_value, false, 'feed_read_failed');
@@ -46,11 +46,11 @@ BEGIN
         FROM cti.sources
         WHERE id = source_id_value
           AND last_checked_at IS NOT NULL
-          AND last_error_at IS NOT NULL
+          AND last_error_at = last_checked_at
           AND last_error_code = 'feed_read_failed'
           AND last_success_at IS NULL
     ) THEN
-        RAISE EXCEPTION 'Previous source failure was not finalized.';
+        RAISE EXCEPTION 'Repeated source failure did not update its error timestamp.';
     END IF;
 
     PERFORM cti.record_source_check(source_id_value, true, NULL);

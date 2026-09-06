@@ -1,0 +1,99 @@
+#!/usr/bin/env sh
+# Destructive only inside a fresh, uniquely named local Docker Compose project.
+set -eu
+repository_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+test_parent=${CTI_TEST_PARENT:-${TMPDIR:-/tmp}}
+test_dir=$(mktemp -d "$test_parent/cti-recovery-test.XXXXXX")
+project="cti-recovery-$(basename "$test_dir" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')"
+cleanup() {
+    (cd "$test_dir" && docker compose down --volumes --remove-orphans >/dev/null 2>&1) || true
+    case "$test_dir" in "$test_parent"/cti-recovery-test.*) rm -rf -- "$test_dir" ;; esac
+}
+trap cleanup EXIT HUP INT TERM
+umask 077
+mkdir -p "$test_dir/app" "$test_dir/scripts" "$test_dir/shim"
+cp -R "$repository_dir/app/cti" "$test_dir/app/cti"
+cp "$repository_dir/scripts/backup.sh" "$repository_dir/scripts/restore.sh" "$repository_dir/scripts/migrate.sh" "$test_dir/scripts/"
+cat > "$test_dir/.env" <<EOF
+COMPOSE_PROJECT_NAME=$project
+POSTGRES_USER=cti_owner
+POSTGRES_DB=cti
+EOF
+cat > "$test_dir/compose.yml" <<'EOF'
+services:
+  cti-db:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    environment:
+      POSTGRES_USER: cti_owner
+      POSTGRES_DB: cti
+      POSTGRES_PASSWORD: isolated-test-owner
+      CTI_APP_PASSWORD: isolated-test-app
+      CTI_DASHBOARD_PASSWORD: isolated-test-dashboard
+    volumes:
+      - test_data:/var/lib/postgresql/data
+      - ./app/cti/init-database.sh:/docker-entrypoint-initdb.d/010-init-database.sh:ro
+      - ./app/cti/schema.sql:/opt/cti/schema.sql:ro
+      - ./app/cti/migrations:/opt/cti/migrations:ro
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U cti_owner -d cti]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    networks: [isolated]
+  cti-dashboard:
+    image: alpine:3.23
+    command: [sleep, '3600']
+    networks: [isolated]
+volumes:
+  test_data:
+networks:
+  isolated:
+    internal: true
+EOF
+cd "$test_dir"
+docker compose up -d --wait --wait-timeout 90 >/dev/null
+sh scripts/migrate.sh > migrations.log
+for test_file in app/cti/tests/*.sql; do
+    test_db="cti_test_$(basename "$test_file" .sql | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_')"
+    docker compose exec -T cti-db psql -U cti_owner -d postgres -v ON_ERROR_STOP=1 \
+        -c "CREATE DATABASE \"$test_db\" TEMPLATE cti;" >/dev/null
+    if docker compose exec -T cti-db psql -U cti_owner -d "$test_db" -v ON_ERROR_STOP=1 < "$test_file" > sql-test.log; then
+        printf 'PASS SQL: %s\n' "$(basename "$test_file")"
+    else
+        cat sql-test.log >&2
+        exit 1
+    fi
+    docker compose exec -T cti-db psql -U cti_owner -d postgres -v ON_ERROR_STOP=1 \
+        -c "DROP DATABASE \"$test_db\";" >/dev/null
+done
+docker compose exec -T cti-db psql -U cti_owner -d cti -v ON_ERROR_STOP=1 -c \
+    "CREATE TABLE public.recovery_probe(id integer PRIMARY KEY, value text); INSERT INTO public.recovery_probe SELECT i, repeat(md5(i::text), 20) FROM generate_series(1,2000) i;" >/dev/null
+# Freeze the clock to prove two same-second backups cannot overwrite each other.
+cat > shim/date <<'EOF'
+#!/usr/bin/env sh
+printf '20260905T000000Z\n'
+EOF
+chmod +x shim/date
+first=$(PATH="$test_dir/shim:$PATH" sh scripts/backup.sh)
+second=$(PATH="$test_dir/shim:$PATH" sh scripts/backup.sh)
+[ "$first" != "$second" ] && [ -s "$first" ] && [ -s "$second" ]
+printf 'PASS: same-second backups have distinct paths\n'
+docker compose exec -T cti-db psql -U cti_owner -d cti -v ON_ERROR_STOP=1 -c \
+    "INSERT INTO public.recovery_probe VALUES (9999, 'must-survive-failed-restore');" >/dev/null
+bytes=$(wc -c < "$first" | tr -d ' ')
+head -c "$((bytes - 128))" "$first" > corrupted.dump
+# A readable archive catalog does not prove the archived data is intact.
+docker compose exec -T cti-db pg_restore --list < corrupted.dump >/dev/null
+if CTI_RESTORE_CONFIRM=RESTORE_CTIDB CTI_RESTORE_WORKFLOWS_DISABLED=YES sh scripts/restore.sh corrupted.dump > failed-restore.log 2>&1; then
+    printf 'FAIL: a truncated archive was accepted\n' >&2
+    exit 1
+fi
+survivor=$(docker compose exec -T cti-db psql -U cti_owner -d cti -Atc "SELECT value FROM public.recovery_probe WHERE id=9999;")
+[ "$survivor" = 'must-survive-failed-restore' ]
+printf 'PASS: failed restore rolled back database changes\n'
+CTI_RESTORE_CONFIRM=RESTORE_CTIDB CTI_RESTORE_WORKFLOWS_DISABLED=YES sh scripts/restore.sh "$first" > successful-restore.log
+rows=$(docker compose exec -T cti-db psql -U cti_owner -d cti -Atc 'SELECT count(*) FROM public.recovery_probe;')
+[ "$rows" = 2000 ]
+docker compose exec -T cti-dashboard true
+docker compose exec -T cti-db psql -U cti_owner -d cti -v ON_ERROR_STOP=1 < app/cti/tests/verify-live.sql >/dev/null
+printf 'PASS: full restore, role grants, schema and dashboard restart\n'

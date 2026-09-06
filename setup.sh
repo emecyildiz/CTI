@@ -44,35 +44,58 @@ secret() {
 }
 
 validate_telegram_webhook() {
+    # Keep the value safe for both dotenv and awk; do not accept URI parsers'
+    # automatic escaping of whitespace, backslashes, or control characters.
+    printf '%s\n' "$telegram_webhook_url" | LC_ALL=C grep -Eq \
+        '^https://([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(:[0-9]{1,5})?(/[A-Za-z0-9._~!()*+,;=:%/-]*)?$' \
+        || fail 'The Telegram webhook URL must be HTTPS with a public DNS hostname and a URL-safe path; credentials, whitespace, backslashes, quotes, dollar signs, queries, and fragments are not allowed.'
     case "$telegram_webhook_url" in
-        https://*) ;;
-        *) fail 'The interactive Telegram query requires an absolute HTTPS webhook URL.' ;;
+        *[!A-Za-z0-9._~\!\(\)\*+,\;=:%/-]*) fail 'The Telegram webhook URL contains an unsafe character.' ;;
     esac
-    case "$telegram_webhook_url" in
-        *\?*|*\#*|*@*|*[[:space:]]*) fail 'The Telegram webhook URL must not contain credentials, whitespace, a query, or a fragment.' ;;
-    esac
+    printf '%s\n' "$telegram_webhook_url" | LC_ALL=C grep -Eq '%([^0-9A-Fa-f]|[0-9A-Fa-f]([^0-9A-Fa-f]|$)|$)' \
+        && fail 'The Telegram webhook URL contains an invalid percent escape.'
     authority=${telegram_webhook_url#https://}
     authority=${authority%%/*}
-    [ -n "$authority" ] || fail 'The Telegram webhook URL must contain a public hostname.'
+    hostname=$(printf '%s' "${authority%%:*}" | tr '[:upper:]' '[:lower:]')
+    [ "${#hostname}" -le 253 ] || fail 'The Telegram webhook hostname is too long.'
+    case "$hostname" in
+        *.localhost|*.local|*.internal) fail 'The Telegram webhook URL must use a public DNS hostname.' ;;
+        *[!0-9.]*) ;;
+        *) fail 'The Telegram webhook URL must use a public DNS hostname, not an IP address.' ;;
+    esac
     case "$authority" in
-        localhost|localhost:*|127.*|0.0.0.0|0.0.0.0:*|'[::1]'|'[::1]':*)
-            fail 'The Telegram webhook URL cannot use a loopback or wildcard host.'
-            ;;
+        *:*)
+            port=${authority##*:}
+            [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || fail 'The Telegram webhook port must be between 1 and 65535.' ;;
     esac
     case "$telegram_proxy_hops" in
         ''|*[!0-9]*) fail 'N8N proxy hops must be a non-negative integer.' ;;
     esac
     [ "$telegram_proxy_hops" -le 16 ] || fail 'N8N proxy hops must be 16 or less.'
-    telegram_webhook_url=${telegram_webhook_url%/}/
+    while [ "${telegram_webhook_url%/}" != "$telegram_webhook_url" ]; do
+        telegram_webhook_url=${telegram_webhook_url%/}
+    done
+    telegram_webhook_url=$telegram_webhook_url/
+}
+
+validate_telegram_mode() {
+    [ -n "$telegram_webhook_url" ] || return 0
+    [ "$use_existing_n8n" != "true" ] || \
+        fail 'Configure WEBHOOK_URL on the existing n8n service itself; --telegram-webhook-url is for managed n8n only.'
+    if [ -f .env ]; then
+        existing_managed_n8n=$(sed -n 's/^CTI_MANAGED_N8N=//p' .env | head -n 1)
+        [ "$existing_managed_n8n" = "true" ] || \
+            fail 'The existing .env does not enable managed n8n. Configure WEBHOOK_URL on the existing n8n service itself.'
+    fi
 }
 
 upsert_environment() {
     key=$1
     value=$2
     temporary_env=".env.tmp.$$"
-    awk -v key="$key" -v value="$value" '
-        BEGIN { found = 0 }
-        index($0, key "=") == 1 { print key "=" value; found = 1; next }
+    CTI_ENV_KEY="$key" CTI_ENV_VALUE="$value" awk '
+        BEGIN { key = ENVIRON["CTI_ENV_KEY"]; value = ENVIRON["CTI_ENV_VALUE"]; found = 0 }
+        index($0, key "=") == 1 { if (!found) print key "=" value; found = 1; next }
         { print }
         END { if (!found) print key "=" value }
     ' .env > "$temporary_env"
@@ -81,8 +104,7 @@ upsert_environment() {
 }
 
 [ -z "$telegram_webhook_url" ] || validate_telegram_webhook
-[ "$use_existing_n8n" != "true" ] || [ -z "$telegram_webhook_url" ] || \
-    fail 'Configure WEBHOOK_URL on the existing n8n service itself; --telegram-webhook-url is for managed n8n only.'
+validate_telegram_mode
 
 command -v docker >/dev/null 2>&1 || {
     printf 'Docker Engine and Docker Compose are required.\n'

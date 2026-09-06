@@ -87,6 +87,10 @@ Select AI, outbound Telegram delivery, and interactive Telegram query only when 
 
 The key is request-scoped and is not stored, reflected in HTML, or placed in a URL. The audit performs GET requests only. It never updates or activates a workflow.
 
+Telegram query mapping and readiness accept the reviewed seven-node graph and exact authorization script, allowing only the private numeric ID and line-ending changes. Disabled nodes, error-continuation settings on the guard, extra entry points, altered connections, or edited guard code cause a refusal. If you intentionally customize this workflow, review it independently rather than treating the bundled audit as certification. A repository guard-template change must update its fingerprint and regression fixtures together.
+
+Webhook configuration uses HTTPS with a DNS hostname and a URL-safe path; IP literals, local-name suffixes, credentials, whitespace, queries, and fragments are rejected consistently by the guided setup and dashboard. This checks configuration shape, not DNS resolution or public reachability. The setup opt-in and readiness checks do not prevent an operator from manually activating workflows directly in n8n.
+
 ## Activation order
 
 Activate one workflow at a time and inspect its first execution:

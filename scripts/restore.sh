@@ -52,7 +52,7 @@ trap restart_dashboard EXIT HUP INT TERM
 
 docker compose stop cti-dashboard
 docker compose exec -T cti-db \
-    pg_restore --clean --if-exists --no-owner --exit-on-error \
+    pg_restore --clean --if-exists --no-owner --exit-on-error --single-transaction \
     -U "$postgres_user" -d "$postgres_db" < "$backup_path"
 docker compose start cti-dashboard
 

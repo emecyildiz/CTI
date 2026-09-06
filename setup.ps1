@@ -41,6 +41,11 @@ function Set-EnvironmentValue([string]$Key, [string]$Value) {
         if ($lines[$index].StartsWith("$Key=", [StringComparison]::Ordinal)) {
             $lines[$index] = "$Key=$Value"
             $updated = $true
+            for ($duplicate = $lines.Count - 1; $duplicate -gt $index; $duplicate--) {
+                if ($lines[$duplicate].StartsWith("$Key=", [StringComparison]::Ordinal)) {
+                    $lines.RemoveAt($duplicate)
+                }
+            }
             break
         }
     }
@@ -48,17 +53,60 @@ function Set-EnvironmentValue([string]$Key, [string]$Value) {
     [IO.File]::WriteAllLines($path, $lines, [Text.UTF8Encoding]::new($false))
 }
 
-if ($TelegramWebhookUrl) {
-    $webhookUri = $null
-    if (-not [Uri]::TryCreate($TelegramWebhookUrl, [UriKind]::Absolute, [ref]$webhookUri) -or
-        $webhookUri.Scheme -ne 'https' -or $webhookUri.UserInfo -or $webhookUri.Query -or
-        $webhookUri.Fragment -or $webhookUri.IsLoopback) {
-        Stop-Setup 'TelegramWebhookUrl must be a public HTTPS base URL without credentials, a query, or a fragment.'
+function ConvertTo-TelegramWebhookUrl([string]$Value) {
+    # Validate the original input: System.Uri silently escapes raw newlines and
+    # spaces, which must never be copied into a dotenv assignment.
+    $pattern = '\Ahttps://([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(:[0-9]{1,5})?(/[A-Za-z0-9._~!()*+,;=:%/-]*)?\z'
+    if ($Value -cnotmatch $pattern -or $Value -match '%([^0-9A-Fa-f]|[0-9A-Fa-f]([^0-9A-Fa-f]|$)|$)') {
+        Stop-Setup 'TelegramWebhookUrl must be HTTPS with a public DNS hostname and a URL-safe path; credentials, whitespace, backslashes, quotes, dollar signs, queries, and fragments are not allowed.'
     }
-    if ($UseExistingN8n) {
+    $webhookUri = $null
+    if (-not [Uri]::TryCreate($Value, [UriKind]::Absolute, [ref]$webhookUri) -or
+        $webhookUri.Scheme -ne 'https' -or $webhookUri.UserInfo -or $webhookUri.Query -or
+        $webhookUri.Fragment -or $webhookUri.IsLoopback -or $webhookUri.Port -lt 1 -or
+        $webhookUri.Host.Length -gt 253 -or $webhookUri.HostNameType -ne [UriHostNameType]::Dns -or
+        $webhookUri.Host -match '^[0-9.]+$' -or $webhookUri.Host -match '\.(localhost|local|internal)$') {
+        Stop-Setup 'TelegramWebhookUrl must use a public DNS hostname and a port between 1 and 65535.'
+    }
+    return $Value.TrimEnd('/') + '/'
+}
+
+function Assert-TelegramManagedN8n([bool]$UseExisting, [string]$EnvironmentPath) {
+    if ($UseExisting) {
         Stop-Setup 'Configure WEBHOOK_URL on the existing n8n service itself; -TelegramWebhookUrl is for managed n8n only.'
     }
-    $TelegramWebhookUrl = $TelegramWebhookUrl.TrimEnd('/') + '/'
+    if (Test-Path -LiteralPath $EnvironmentPath) {
+        $managedLine = Select-String -LiteralPath $EnvironmentPath -Pattern '^CTI_MANAGED_N8N=(.*)$' | Select-Object -First 1
+        if (-not $managedLine -or $managedLine.Matches[0].Groups[1].Value -ne 'true') {
+            Stop-Setup 'The existing .env does not enable managed n8n. Configure WEBHOOK_URL on the existing n8n service itself.'
+        }
+    }
+}
+
+function Assert-SetupEnvironment([hashtable]$Values, [bool]$ManagedN8n) {
+    $passwordKeys = @('POSTGRES_PASSWORD', 'CTI_APP_PASSWORD', 'CTI_DASHBOARD_PASSWORD')
+    for ($index = 0; $index -lt $passwordKeys.Count; $index++) {
+        $key = $passwordKeys[$index]
+        if ([string]::IsNullOrEmpty($Values[$key])) { Stop-Setup "$key is missing." }
+        for ($other = 0; $other -lt $index; $other++) {
+            if ($Values[$key] -ceq $Values[$passwordKeys[$other]]) {
+                Stop-Setup 'Owner, n8n, and dashboard passwords must differ.'
+            }
+        }
+    }
+    $binding = $Values['CTI_DASHBOARD_BIND']
+    if (-not $binding) { $binding = '127.0.0.1' }
+    if ($binding -cnotin @('127.0.0.1', 'localhost')) {
+        Stop-Setup 'The first public release only permits a loopback dashboard binding.'
+    }
+    if ($ManagedN8n -and [string]::IsNullOrEmpty($Values['N8N_ENCRYPTION_KEY'])) {
+        Stop-Setup 'N8N_ENCRYPTION_KEY is required when CTI_MANAGED_N8N=true.'
+    }
+}
+
+if ($TelegramWebhookUrl) {
+    $TelegramWebhookUrl = ConvertTo-TelegramWebhookUrl $TelegramWebhookUrl
+    Assert-TelegramManagedN8n ([bool]$UseExistingN8n) (Join-Path $PSScriptRoot '.env')
 }
 
 Write-Step 'Checking prerequisites'
@@ -123,9 +171,7 @@ $environmentValues = @{}
 Get-Content -LiteralPath '.env' | ForEach-Object {
     if ($_ -match '^([^#=]+)=(.*)$') { $environmentValues[$matches[1]] = $matches[2] }
 }
-if ($managedN8n -and -not $environmentValues['N8N_ENCRYPTION_KEY']) {
-    Stop-Setup 'N8N_ENCRYPTION_KEY is required when CTI_MANAGED_N8N=true.'
-}
+Assert-SetupEnvironment $environmentValues $managedN8n
 
 Write-Step 'Validating and starting CTI services'
 $composeArguments = @('compose')
