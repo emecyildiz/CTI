@@ -93,6 +93,13 @@ Webhook configuration uses HTTPS with a DNS hostname and a URL-safe path; IP lit
 
 ## Activation order
 
+Known limitation for fresh imports: the seven CTI workflows retain an old
+`settings.errorWorkflow` identifier. Before activation, select the newly imported
+`n8n Workflow Error Alerts` in each workflow's **Error Workflow** setting. The
+current readiness audit does not validate this reference, so a passing audit is
+not proof that error alerts are routed correctly. Automatic relinking and a
+readiness check are tracked as a release gate.
+
 Activate one workflow at a time and inspect its first execution:
 
 1. `CTI Source Collection`
