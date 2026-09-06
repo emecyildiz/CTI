@@ -52,7 +52,9 @@ services:
       - ./app/cti/schema.sql:/opt/cti/schema.sql:ro
       - ./app/cti/migrations:/opt/cti/migrations:ro
     healthcheck:
-      test: [CMD-SHELL, pg_isready -U cti_owner -d cti]
+      # The init-only server listens on a Unix socket, not TCP. Do not release
+      # migrations until initialization finishes and the final server starts.
+      test: [CMD-SHELL, pg_isready -h 127.0.0.1 -U cti_owner -d cti]
       interval: 1s
       timeout: 3s
       retries: 60

@@ -25,7 +25,9 @@ jobs:
           dotnet run --project tests/dashboard-boundary/DashboardBoundary.Tests.csproj --configuration Release
           dotnet build app/cti-dashboard/CtiDashboard.csproj --configuration Release --warnaserror
       - name: Isolated SQL and recovery regression
-        run: sh scripts/tests/recovery.sh
+        run: |
+          sh tests/postgres-startup-readiness.sh
+          sh scripts/tests/recovery.sh
   windows-setup:
     runs-on: windows-latest
     timeout-minutes: 5
