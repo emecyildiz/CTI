@@ -21,6 +21,7 @@ jobs:
       - name: Setup input and dashboard security boundaries
         run: |
           sh tests/setup-inputs.sh
+          sh tests/recovery-diagnostics.sh
           dotnet run --project tests/dashboard-boundary/DashboardBoundary.Tests.csproj --configuration Release
           dotnet build app/cti-dashboard/CtiDashboard.csproj --configuration Release --warnaserror
       - name: Isolated SQL and recovery regression
