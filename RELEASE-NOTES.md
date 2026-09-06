@@ -1,4 +1,45 @@
-# 0.1.0-rc.6
+# 0.1.0-rc.7
+
+Seventh release candidate: setup boundary hardening, verified n8n credential/error
+routing, and recovery/startup reliability. This is release preparation, not a
+stable-release approval.
+
+## Changes since rc.6
+
+- Local dashboard Host validation limits browser DNS-rebinding exposure.
+- Setup scripts reject unsafe webhook URLs and preserve dotenv values safely;
+  Windows preflight checks password separation and loopback bindings.
+- Telegram query mapping validates the reviewed authorization code and graph.
+- PostgreSQL mapping links seven error-workflow routes to the newly imported
+  handler. Readiness and mapping readback reject stale or unsafe references.
+- Unique backup names avoid same-second collisions; restore uses one database
+  transaction to preserve the prior state when an archive fails partway through.
+- PostgreSQL readiness waits for the final TCP server, not its temporary
+  socket-only initialization server.
+- CI covers application boundaries, Windows setup, isolated SQL/recovery, and
+  real n8n 2.30.5 import/mapping with fake credentials and zero executions.
+- Release archives, version labels and manifests are built from the same clean
+  Git commit. No separate ZIP executable is required.
+
+## Verification and remaining acceptance
+
+Source CI for `4e16123` passed all three jobs on 6 September 2026, including
+11 isolated SQL scenarios, backup/restore, and real n8n credential/error routing.
+The release-preparation commit and generated artifacts require their own checks.
+Clean-machine installation, versioned-archive recovery and real Telegram delivery
+are still pending. No claim is made that those acceptance tests have passed.
+
+The package remains self-hosted. Eight workflows are imported disabled; the
+operator supplies credentials and chooses when to activate them. The bundled AI
+nodes use Gemini; other providers require adapting those nodes. Incoming Telegram
+queries require an operator-configured public HTTPS route; outbound delivery does
+not. The installer does not create DNS, TLS or tunnel routes.
+
+The six compatible sources remain The Hacker News, CISA, Microsoft Security Blog,
+BleepingComputer, Cisco Talos and Krebs on Security. Dark Reading and SecurityWeek
+remain compatibility-blocked. The Windows executable remains unsigned.
+
+## Previous candidate verification record (rc.6)
 
 Sixth release candidate makes interactive Telegram support an explicit, guarded opt-in instead of implying that a VPS installation alone is sufficient.
 

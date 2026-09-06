@@ -5,7 +5,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repository_dir=$(dirname "$script_dir")
 cd "$repository_dir"
 
-for command_name in git tar zip sha256sum; do
+for command_name in git grep sha256sum; do
     command -v "$command_name" >/dev/null 2>&1 || {
         printf 'ERROR: %s is required to build a release.\n' "$command_name" >&2
         exit 1
@@ -13,10 +13,19 @@ for command_name in git tar zip sha256sum; do
 done
 
 version=$(tr -d '\r\n' < VERSION)
-case "$version" in
-    [0-9]*.[0-9]*.[0-9]*-rc.[0-9]*|[0-9]*.[0-9]*.[0-9]*) ;;
-    *) printf 'ERROR: invalid VERSION value: %s\n' "$version" >&2; exit 1 ;;
-esac
+printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' || {
+    printf 'ERROR: invalid VERSION value.\n' >&2
+    exit 1
+}
+committed_version=$(git show HEAD:VERSION | tr -d '\r\n')
+[ "$version" = "$committed_version" ] || {
+    printf 'ERROR: VERSION differs from HEAD; commit release preparation before packaging.\n' >&2
+    exit 1
+}
+git diff --quiet HEAD -- || {
+    printf 'ERROR: tracked changes are not committed; refusing an ambiguous release build.\n' >&2
+    exit 1
+}
 
 output_dir=${1:-dist}
 mkdir -p "$output_dir"
@@ -24,17 +33,9 @@ output_dir=$(CDPATH= cd -- "$output_dir" && pwd)
 
 package_name="cti-self-hosted-$version"
 archive_name="$package_name.zip"
-temporary_directory=$(mktemp -d)
-cleanup() { rm -rf "$temporary_directory"; }
-trap cleanup EXIT HUP INT TERM
-
-mkdir -p "$temporary_directory/$package_name"
-git archive --format=tar HEAD | tar -xf - -C "$temporary_directory/$package_name"
-
-(
-    cd "$temporary_directory"
-    zip -qr "$output_dir/$archive_name" "$package_name"
-)
+# Archive only committed files; ignored and personal untracked notes stay out.
+git archive --format=zip --prefix="$package_name/" \
+    --output="$output_dir/$archive_name" HEAD
 
 checksum=$(sha256sum "$output_dir/$archive_name" | awk '{print $1}')
 printf '%s  %s\n' "$checksum" "$archive_name" \
