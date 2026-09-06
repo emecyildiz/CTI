@@ -6,6 +6,10 @@ test_parent=${CTI_TEST_PARENT:-${TMPDIR:-/tmp}}
 test_dir=$(mktemp -d "$test_parent/cti-recovery-test.XXXXXX")
 project="cti-recovery-$(basename "$test_dir" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')"
 cleanup() {
+    result=$?
+    if [ "$result" -ne 0 ]; then
+        (cd "$test_dir" && docker compose logs --no-color --tail 80 cti-db) >&2 || true
+    fi
     (cd "$test_dir" && docker compose down --volumes --remove-orphans >/dev/null 2>&1) || true
     case "$test_dir" in "$test_parent"/cti-recovery-test.*) rm -rf -- "$test_dir" ;; esac
 }
@@ -13,6 +17,9 @@ trap cleanup EXIT HUP INT TERM
 umask 077
 mkdir -p "$test_dir/app" "$test_dir/scripts" "$test_dir/shim"
 cp -R "$repository_dir/app/cti" "$test_dir/app/cti"
+# These are public schema fixtures, read by PostgreSQL's non-root user. The
+# private umask must still protect .env and backups, not hide mounted SQL files.
+chmod -R a+rX "$test_dir/app/cti"
 cp "$repository_dir/scripts/backup.sh" "$repository_dir/scripts/restore.sh" "$repository_dir/scripts/migrate.sh" "$test_dir/scripts/"
 cat > "$test_dir/.env" <<EOF
 COMPOSE_PROJECT_NAME=$project
