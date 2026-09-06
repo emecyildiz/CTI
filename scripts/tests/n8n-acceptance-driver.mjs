@@ -142,6 +142,30 @@ try {
     const payload = ({ name, nodes, connections, settings }) => ({ name, nodes, connections,
       settings: Object.fromEntries(Object.entries(settings).filter(([key]) => settingKeys.includes(key))) });
     const original = structuredClone(query);
+    const errorHandler = detailed.find(w => w.name === 'n8n Workflow Error Alerts');
+    assert.ok(errorHandler);
+    const sources = detailed.filter(w => w.id !== errorHandler.id);
+    assert.equal(sources.length, 7);
+    assert.ok(sources.every(w => w.settings.errorWorkflow === errorHandler.id));
+    pass('seven error-workflow references resolve to the imported handler');
+
+    query.settings.errorWorkflow = 'stale-source-installation-id';
+    await api(`workflows/${query.id}`, payload(query));
+    assert.match((await post('readiness', all, 200)).text, /Configuration needs attention/);
+    assert.match((await post('postgres-workflow-mapping')).location, /workflows_mapped$/);
+    assert.equal((await api(`workflows/${query.id}`)).settings.errorWorkflow, errorHandler.id);
+    assert.match((await post('readiness', all, 200)).text, /Ready for controlled activation/);
+    query.settings.errorWorkflow = errorHandler.id;
+    pass('stale error route blocks readiness and is repaired even when credentials are already mapped');
+
+    const originalHandler = structuredClone(errorHandler);
+    errorHandler.nodes.find(n => n.name === 'Error Trigger').disabled = true;
+    await api(`workflows/${errorHandler.id}`, payload(errorHandler));
+    await post('postgres-workflow-mapping', {}, 409);
+    assert.match((await post('readiness', all, 200)).text, /Configuration needs attention/);
+    await api(`workflows/${errorHandler.id}`, payload(originalHandler));
+    pass('disabled error handler blocks relinking and readiness');
+
     query.nodes.find(n => n.name === 'Authorize and Parse Request').disabled = true;
     await api(`workflows/${query.id}`, payload(query));
     await post('telegram-workflow-mapping', { authorized_chat_id: '123456789' }, 409);
@@ -152,9 +176,6 @@ try {
     assert.ok((await api('workflows?limit=100')).data.every(w => !w.active && !w.activeVersionId));
     assert.equal((await api('executions?limit=100')).data.length, 0);
     pass('all workflows remained disabled; zero executions and no external API calls');
-    const ids = new Set(detailed.map(w => w.id));
-    const dangling = detailed.filter(w => w.settings?.errorWorkflow && !ids.has(w.settings.errorWorkflow));
-    if (dangling.length) console.log(`KNOWN GAP: ${dangling.length} imported error-workflow references do not resolve; configure them before activation.`);
   }
 } catch (error) {
   console.error(safe(error.message));

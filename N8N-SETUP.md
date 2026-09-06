@@ -93,12 +93,15 @@ Webhook configuration uses HTTPS with a DNS hostname and a URL-safe path; IP lit
 
 ## Activation order
 
-Known limitation for fresh imports: the seven CTI workflows retain an old
-`settings.errorWorkflow` identifier. Before activation, select the newly imported
-`n8n Workflow Error Alerts` in each workflow's **Error Workflow** setting. The
-current readiness audit does not validate this reference, so a passing audit is
-not proof that error alerts are routed correctly. Automatic relinking and a
-readiness check are tracked as a release gate.
+PostgreSQL workflow mapping also replaces the seven CTI drafts' imported
+`settings.errorWorkflow` references with the unique local ID of
+`n8n Workflow Error Alerts`. Import all eight workflows first and keep them
+disabled, unpublished and unarchived while mapping. A missing, duplicate or
+unsafe error-handler draft blocks mapping before writes. The update response
+must confirm each new reference, and readiness rejects stale or missing routes.
+The handler must retain its three enabled nodes and have no chained error route.
+This links error routing; it does not send a test alert or verify Telegram
+delivery. Configure the Telegram credential and private destination separately.
 
 Activate one workflow at a time and inspect its first execution:
 

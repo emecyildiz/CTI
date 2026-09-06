@@ -26,13 +26,11 @@ bindings, readiness before and after configuration, disabled-guard rejection,
 draft restoration, and zero executions. This is an integration regression test,
 not a complete release approval or an external Telegram/AI connectivity test.
 
-## Known release gate: error-workflow references
+## Error-workflow routing regression
 
-The exports currently retain a source-installation `settings.errorWorkflow` ID.
-CLI import gives the error-alert workflow a new ID, so those references do not
-resolve on a fresh installation. The runner reports this as `KNOWN GAP`;
-credential/authorization test success does **not** mean error routing is ready.
-The dashboard readiness audit does not yet check this link. Before activation,
-select the imported **n8n Workflow Error Alerts** in each CTI workflow's error
-workflow setting. Automatic mapping and readiness validation of these links are
-required before the next release is promoted.
+The exports retain a source-installation `settings.errorWorkflow` ID. PostgreSQL
+mapping replaces it with the local imported handler ID. The test asserts all
+seven references, deliberately introduces a stale route, checks readiness refusal,
+then repairs it through mapping while the database credentials are already mapped.
+A disabled error trigger must block both relinking and readiness. All changes
+remain disabled drafts; no actual error workflow or Telegram request is executed.

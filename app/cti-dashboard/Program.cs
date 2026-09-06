@@ -1176,7 +1176,8 @@ internal sealed record N8nPreparedWorkflow(
     IReadOnlyDictionary<string, string> NodeTypesByName,
     JsonObject Payload,
     bool NeedsUpdate,
-    string? AuthorizedTelegramChatId = null);
+    string? AuthorizedTelegramChatId = null,
+    string? RequiredErrorWorkflowId = null);
 
 internal sealed class N8nWorkflowSafetyException(string message) : Exception(message);
 
@@ -1480,9 +1481,10 @@ internal sealed class N8nHandoffProbe : IDisposable
             PostgresCredentialType,
             PostgresWorkflowTargets,
             "Create the reserved PostgreSQL credential before mapping workflows.",
-            "All bundled PostgreSQL nodes already use the reserved credential.",
-            "The reserved PostgreSQL credential was mapped to 31 nodes in seven disabled workflows.",
-            cancellationToken);
+            "All bundled PostgreSQL nodes and error-workflow routes are already mapped.",
+            "The PostgreSQL credential and error-workflow routes were mapped in seven disabled workflows.",
+            cancellationToken,
+            mapErrorRouting: true);
 
     internal async Task<N8nWorkflowMappingResult> MapTelegramWorkflowsAsync(
         string n8nApiKey,
@@ -1611,6 +1613,19 @@ internal sealed class N8nHandoffProbe : IDisposable
                 PostgresWorkflowTargets,
                 workflows,
                 "31 expected database nodes across seven workflows use the restricted CTI credential.");
+
+            var errorRoutingReady = workflows.TryGetValue("n8n Workflow Error Alerts", out var errorHandler) &&
+                                    IsUsableErrorHandler(errorHandler) &&
+                                    PostgresWorkflowTargets.All(target =>
+                                        workflows.TryGetValue(target.WorkflowName, out var source) &&
+                                        ErrorRouteMatches(source, RequiredString(errorHandler, "id")));
+            components.Add(new N8nReadinessComponent(
+                "Error-workflow routing",
+                errorRoutingReady ? "Ready" : "Not ready",
+                errorRoutingReady,
+                errorRoutingReady
+                    ? "All seven CTI drafts point to the imported error-alert workflow. Telegram delivery still requires its credential and destination."
+                    : "Error-workflow routes are missing or stale, or the error-alert draft is unsafe. Run PostgreSQL workflow mapping after importing all eight drafts."));
 
             if (includeAi)
             {
@@ -1756,6 +1771,36 @@ internal sealed class N8nHandoffProbe : IDisposable
         RequiredBoolean(workflow, "isArchived", out var archived) && !archived &&
         workflow["activeVersion"] is null;
 
+    private static bool IsUsableErrorHandler(JsonObject workflow)
+    {
+        if (!IsDisabledDraft(workflow) || workflow["activeVersionId"] is not null ||
+            !IsSafeCredentialId(OptionalString(workflow, "id")) ||
+            !string.Equals(OptionalString(workflow, "name"), "n8n Workflow Error Alerts", StringComparison.Ordinal) ||
+            workflow["nodes"] is not JsonArray nodes || nodes.Count != 3 ||
+            workflow["settings"] is not JsonObject settings ||
+            !string.IsNullOrEmpty(OptionalString(settings, "errorWorkflow")))
+        {
+            return false;
+        }
+
+        var expected = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["Error Trigger"] = "n8n-nodes-base.errorTrigger",
+            ["Format Error Alert"] = "n8n-nodes-base.code",
+            ["Send a text message"] = "n8n-nodes-base.telegram"
+        };
+        return nodes.OfType<JsonObject>().Count() == 3 && expected.All(pair =>
+            nodes.OfType<JsonObject>().Count(node =>
+                string.Equals(OptionalString(node, "name"), pair.Key, StringComparison.Ordinal) &&
+                string.Equals(OptionalString(node, "type"), pair.Value, StringComparison.Ordinal) &&
+                (node["disabled"] is null || node["disabled"] is JsonValue value &&
+                    value.TryGetValue<bool>(out var disabled) && !disabled)) == 1);
+    }
+
+    private static bool ErrorRouteMatches(JsonObject workflow, string errorWorkflowId) =>
+        workflow["settings"] is JsonObject settings &&
+        string.Equals(OptionalString(settings, "errorWorkflow"), errorWorkflowId, StringComparison.Ordinal);
+
     private static bool WorkflowTargetUsesCredential(
         JsonObject workflow,
         N8nWorkflowTarget target,
@@ -1849,7 +1894,8 @@ internal sealed class N8nHandoffProbe : IDisposable
         string alreadyMappedMessage,
         string mappedMessage,
         CancellationToken cancellationToken,
-        string? authorizedTelegramChatId = null)
+        string? authorizedTelegramChatId = null,
+        bool mapErrorRouting = false)
     {
         await credentialLock.WaitAsync(cancellationToken);
         try
@@ -1871,6 +1917,21 @@ internal sealed class N8nHandoffProbe : IDisposable
                     missingMessage);
             }
 
+            string? errorWorkflowId = null;
+            if (mapErrorRouting)
+            {
+                var errorTarget = TelegramWorkflowTargets.Single(target =>
+                    target.WorkflowName == "n8n Workflow Error Alerts");
+                var errorLookup = await FindWorkflowByNameAsync(errorTarget, n8nApiKey, cancellationToken);
+                if (errorLookup.Error is not null) return errorLookup.Error;
+                if (!IsUsableErrorHandler(errorLookup.Workflow!))
+                {
+                    throw new N8nWorkflowSafetyException(
+                        "The error-alert workflow must be a disabled, unpublished, unarchived draft with its three enabled nodes and no chained error route.");
+                }
+                errorWorkflowId = RequiredString(errorLookup.Workflow!, "id");
+            }
+
             var preparedWorkflows = new List<N8nPreparedWorkflow>(workflowTargets.Count);
             foreach (var target in workflowTargets)
             {
@@ -1887,6 +1948,16 @@ internal sealed class N8nHandoffProbe : IDisposable
                     workflowLookup.Workflow!,
                     target,
                     credentialLookup.CredentialId);
+                if (errorWorkflowId is not null)
+                {
+                    var changed = !ErrorRouteMatches(prepared.Payload, errorWorkflowId);
+                    prepared.Payload["settings"]!["errorWorkflow"] = errorWorkflowId;
+                    prepared = prepared with
+                    {
+                        NeedsUpdate = prepared.NeedsUpdate || changed,
+                        RequiredErrorWorkflowId = errorWorkflowId
+                    };
+                }
                 if (authorizedTelegramChatId is not null)
                 {
                     prepared = ApplyTelegramConfiguration(
@@ -2295,7 +2366,9 @@ internal sealed class N8nHandoffProbe : IDisposable
                 !RequiredBoolean(updatedWorkflow, "isArchived", out var archived) || archived ||
                 updatedWorkflow["activeVersion"] is not null ||
                 !WorkflowNodesUseCredential(updatedWorkflow, workflow, credentialId) ||
-                !TelegramConfigurationMatches(updatedWorkflow, workflow))
+                !TelegramConfigurationMatches(updatedWorkflow, workflow) ||
+                (workflow.RequiredErrorWorkflowId is not null &&
+                 !ErrorRouteMatches(updatedWorkflow, workflow.RequiredErrorWorkflowId)))
             {
                 return new N8nWorkflowMappingResult(
                     N8nWorkflowMappingStatus.Rejected,
@@ -2824,7 +2897,7 @@ internal static class HtmlPages
             "workflows_already_mapped" => "<aside class=\"setup-result\"><strong>Gemini workflows were already mapped.</strong><span>No workflow write or activation was performed.</span></aside>",
             "postgres_credential_created" => "<aside class=\"setup-result\"><strong>PostgreSQL credential created in n8n.</strong><span>The database password was not stored in the dashboard database or returned to the page.</span></aside>",
             "postgres_credential_updated" => "<aside class=\"setup-result\"><strong>PostgreSQL credential updated in n8n.</strong><span>The existing reserved CTI credential was reused.</span></aside>",
-            "postgres_workflows_mapped" => "<aside class=\"setup-result\"><strong>PostgreSQL workflow mapping completed.</strong><span>Thirty-one database nodes in seven workflow drafts were updated and remained disabled.</span></aside>",
+            "postgres_workflows_mapped" => "<aside class=\"setup-result\"><strong>PostgreSQL workflow mapping completed.</strong><span>Database credentials and error-alert routes in seven workflow drafts were verified; every draft remained disabled.</span></aside>",
             "postgres_workflows_already_mapped" => "<aside class=\"setup-result\"><strong>PostgreSQL workflows were already mapped.</strong><span>No workflow write or activation was performed.</span></aside>",
             "telegram_credential_created" => "<aside class=\"setup-result\"><strong>Telegram credential created in n8n.</strong><span>The bot token was not stored in the dashboard database or returned to the page.</span></aside>",
             "telegram_credential_updated" => "<aside class=\"setup-result\"><strong>Telegram credential updated in n8n.</strong><span>The existing reserved CTI credential was reused.</span></aside>",
@@ -2898,7 +2971,7 @@ internal static class HtmlPages
                 <form class="credential-form workflow-mapping-form" method="post" action="/setup/postgres-workflow-mapping" autocomplete="off">
                   <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
                   <label>n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
-                  <div class="credential-guidance"><p>Mapping is limited to 31 expected PostgreSQL nodes in seven bundled workflows. Every target workflow must remain disabled, unpublished, unarchived, and structurally unchanged.</p><button type="submit">Map PostgreSQL workflow drafts</button></div>
+                  <div class="credential-guidance"><p>Maps 31 PostgreSQL nodes and links all seven CTI error routes to the imported n8n Workflow Error Alerts. Import all eight drafts first; every target must remain disabled, unpublished, unarchived, and structurally unchanged.</p><button type="submit">Map database access and error routes</button></div>
                 </form>
                 """
             : "<div class=\"credential-unavailable\"><strong>Database workflow mapping is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
