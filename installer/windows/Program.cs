@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace CtiInstaller;
@@ -381,9 +382,22 @@ internal sealed class InstallerForm : Form
             Directory.CreateDirectory(temporaryDirectory);
             var packageRoot = ExtractPayload(temporaryDirectory);
             var version = File.ReadAllText(Path.Combine(packageRoot, "VERSION")).Trim();
-            if (string.IsNullOrWhiteSpace(version)) return 3;
+            var binaryVersion = Assembly.GetExecutingAssembly()
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+                .InformationalVersion.Split('+')[0];
+            if (string.IsNullOrWhiteSpace(version) || version != binaryVersion) return 3;
             var copiedPackage = Path.Combine(temporaryDirectory, "copied-package");
             CopyPackage(packageRoot, copiedPackage);
+            foreach (var source in Directory.GetFiles(packageRoot, "*", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(packageRoot, source);
+                if (relative.Equals(".env", StringComparison.OrdinalIgnoreCase)) continue;
+                var target = Path.Combine(copiedPackage, relative);
+                if (!File.Exists(target)) return 5;
+                using var sourceStream = File.OpenRead(source);
+                using var targetStream = File.OpenRead(target);
+                if (!SHA256.HashData(sourceStream).AsSpan().SequenceEqual(SHA256.HashData(targetStream))) return 5;
+            }
             return File.Exists(Path.Combine(copiedPackage, "setup.ps1"))
                 && File.Exists(Path.Combine(copiedPackage, "compose.yml"))
                 && File.ReadAllText(Path.Combine(copiedPackage, "VERSION")).Trim() == version

@@ -13,6 +13,10 @@ The guided setup can deploy a local n8n container automatically. An existing n8n
 
 ## Guided installation from a release
 
+The examples below target `0.1.0-rc.7`. If those assets are not yet listed in
+GitHub Releases, use the latest published tag and its matching documentation;
+the `main` branch can contain unreleased preparation work.
+
 ### Windows graphical installer
 
 Download `CTI-Setup-<version>-win-x64.exe` and its `.sha256` file from GitHub Releases. Verify the checksum, then start the EXE. The graphical installer:
@@ -32,7 +36,7 @@ The installer runs as the current user and does not request administrator elevat
 On a Linux server, download the versioned terminal installer and its checksum from GitHub Releases:
 
 ```sh
-version=0.1.0-rc.6
+version=0.1.0-rc.7
 base="https://github.com/emecyildiz/CTI/releases/download/v$version"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh.sha256"
@@ -48,13 +52,13 @@ During an interactive managed-n8n installation, Telegram query support is presen
 For a non-interactive managed-n8n installation using the default directory:
 
 ```sh
-./CTI-Setup-0.1.0-rc.6-linux.sh --non-interactive
+./CTI-Setup-0.1.0-rc.7-linux.sh --non-interactive
 ```
 
 For a non-interactive server installation where a public HTTPS route already exists:
 
 ```sh
-./CTI-Setup-0.1.0-rc.6-linux.sh \
+./CTI-Setup-0.1.0-rc.7-linux.sh \
   --non-interactive \
   --telegram-webhook-url https://hooks.example.com/
 ```
