@@ -1,3 +1,17 @@
+# 0.1.0-rc.8 — Windows ports and installation management
+
+- Windows GUI and PowerShell dashboard/managed-n8n port selection with loopback-only bindings, numeric/distinct-port checks, availability checks and saved setting preservation.
+- Unique resource names and directory/engine-bound ownership records for new Windows installations.
+- Preview + confirmation for Stop, Remove services/keep data, and Purge owned data/package files. External n8n, Docker/WSL, images, backups and modified/unknown files remain untouched.
+- Legacy ownership is not guessed. Source paths through junctions/symlinks are refused; deletion uses an allowlisted hash-checked package manifest, never recursive installation-folder deletion.
+- Offline PowerShell tests cover setup flow, ownership/refusal paths, data preservation and partial cleanup failure. Windows installer compilation is checked in CI.
+
+Synthetic real-Docker lifecycle acceptance passed on local Windows Docker Desktop on 7 September: custom loopback ports, stop/restart, remove/recreate with both volumes preserved, shared-resource refusal, and purge with a separate sentinel project/backup preserved. All fixture resources were removed. This uses Node/Alpine stand-ins, not PostgreSQL/n8n application acceptance.
+
+Actual CTI setup acceptance also passed on 7 September: PostgreSQL schema 29, dashboard and n8n readiness on custom ports, eight disabled workflows without duplicates, repeat setup preserving keys/ports, and Remove followed by setup preserving real database data. The test purged its isolated Docker resources successfully. No AI calls or Telegram delivery were activated.
+
+The development GUI was visually checked for layout, missing-Docker-engine blocking, external-n8n port disabling, and the three management choices. Full graphical installation/purge click-through, clean-machine installation, and Linux/macOS management parity remain pending. This is a release candidate for user testing, not a stable-release approval.
+
 # 0.1.0-rc.7
 
 Seventh release candidate: setup boundary hardening, verified n8n credential/error

@@ -5,11 +5,19 @@ param(
     [ValidatePattern('^https://')]
     [string]$TelegramWebhookUrl,
     [ValidateRange(0, 16)]
-    [int]$N8nProxyHops = 1
+    [int]$N8nProxyHops = 1,
+    [ValidateRange(1, 65535)][int]$DashboardPort,
+    [ValidateRange(1, 65535)][int]$N8nPort
 )
 
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
+. (Join-Path $PSScriptRoot 'scripts/windows-lifecycle.ps1')
+[void](Assert-CtiDirectory $PSScriptRoot)
+foreach ($name in @('.env', '.cti-owner.json', 'compose.yml')) {
+    $path = Join-Path $PSScriptRoot $name
+    if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Unsafe linked configuration file: $name" }
+}
 
 function Write-Step([string]$Message) {
     Write-Host "`n==> $Message" -ForegroundColor Cyan
@@ -102,6 +110,21 @@ function Assert-SetupEnvironment([hashtable]$Values, [bool]$ManagedN8n) {
     if ($ManagedN8n -and [string]::IsNullOrEmpty($Values['N8N_ENCRYPTION_KEY'])) {
         Stop-Setup 'N8N_ENCRYPTION_KEY is required when CTI_MANAGED_N8N=true.'
     }
+    $dashboard = if ($Values['CTI_DASHBOARD_PORT']) { $Values['CTI_DASHBOARD_PORT'] } else { '8080' }
+    $n8n = if ($Values['N8N_PORT']) { $Values['N8N_PORT'] } else { '5678' }
+    foreach ($port in @($dashboard, $n8n)) {
+        if ($port -notmatch '^[0-9]{1,5}$' -or [int]$port -lt 1 -or [int]$port -gt 65535) { Stop-Setup 'Ports must be integers between 1 and 65535.' }
+    }
+    if ($ManagedN8n -and [int]$dashboard -eq [int]$n8n) { Stop-Setup 'Dashboard and managed n8n ports must differ.' }
+}
+
+function Assert-CtiPortAvailable([int]$Port) {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
+    try {
+        $listener.Server.ExclusiveAddressUse = $true
+        $listener.Start()
+    } catch { throw "Local port $Port is occupied or unavailable. Select another port; no process will be stopped automatically." }
+    finally { $listener.Stop() }
 }
 
 if ($TelegramWebhookUrl) {
@@ -127,9 +150,13 @@ if ($LASTEXITCODE -ne 0) {
 
 $createdEnvironment = -not (Test-Path -LiteralPath '.env')
 if ($createdEnvironment) {
+    if (Test-Path -LiteralPath '.cti-owner.json') { Stop-Setup 'Ownership record exists but .env is missing. Restore the configuration or use management; do not create a new installation over retained data.' }
+    $project = 'cti-' + [Guid]::NewGuid().ToString('N')
+    $engine = (Invoke-CtiDocker @('info', '--format', '{{.ID}}')).Trim()
+    if (-not $engine) { Stop-Setup 'Docker engine identity is unavailable.' }
     Write-Step 'Creating a private local configuration'
     $managed = if ($UseExistingN8n) { 'false' } else { 'true' }
-    $container = if ($UseExistingN8n) { '' } else { 'cti-n8n' }
+    $container = if ($UseExistingN8n) { '' } else { "$project-n8n" }
     $environment = @"
 POSTGRES_DB=cti
 POSTGRES_USER=cti_owner
@@ -138,8 +165,8 @@ CTI_APP_PASSWORD=$(New-Secret)
 CTI_DASHBOARD_PASSWORD=$(New-Secret)
 CTI_DASHBOARD_BIND=127.0.0.1
 CTI_DASHBOARD_PORT=8080
-CTI_NETWORK_NAME=cti-self-hosted
-CTI_COMPOSE_PROJECT_NAME=cti-self-hosted
+CTI_NETWORK_NAME=$project
+CTI_COMPOSE_PROJECT_NAME=$project
 CTI_N8N_API_URL=http://cti-n8n:5678/api/v1
 N8N_CONTAINER=$container
 CTI_MANAGED_N8N=$managed
@@ -151,6 +178,8 @@ N8N_WEBHOOK_URL=http://localhost:5678/
 N8N_PROXY_HOPS=0
 "@
     [IO.File]::WriteAllText((Join-Path $PSScriptRoot '.env'), $environment, [Text.UTF8Encoding]::new($false))
+    $owner = [ordered]@{ schema = 1; product = 'CTI Self-Hosted'; root = (Assert-CtiDirectory $PSScriptRoot); project = $project; engine = $engine; managed_n8n = (-not [bool]$UseExistingN8n) }
+    [IO.File]::WriteAllText((Join-Path $PSScriptRoot '.cti-owner.json'), ($owner | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 } elseif (Select-String -LiteralPath '.env' -Pattern 'REPLACE_WITH_' -Quiet) {
     Stop-Setup '.env contains placeholder passwords. Replace them or remove .env and rerun setup.'
 }
@@ -171,9 +200,42 @@ $environmentValues = @{}
 Get-Content -LiteralPath '.env' | ForEach-Object {
     if ($_ -match '^([^#=]+)=(.*)$') { $environmentValues[$matches[1]] = $matches[2] }
 }
+$oldDashboardPort = if ($environmentValues['CTI_DASHBOARD_PORT']) { $environmentValues['CTI_DASHBOARD_PORT'] } else { '8080' }
+$oldN8nPort = if ($environmentValues['N8N_PORT']) { $environmentValues['N8N_PORT'] } else { '5678' }
+if ($PSBoundParameters.ContainsKey('N8nPort') -and -not $managedN8n) { Stop-Setup 'N8nPort only configures managed n8n; the existing n8n service is not modified.' }
+if ($PSBoundParameters.ContainsKey('DashboardPort')) { $environmentValues['CTI_DASHBOARD_PORT'] = [string]$DashboardPort }
+if ($PSBoundParameters.ContainsKey('N8nPort')) { $environmentValues['N8N_PORT'] = [string]$N8nPort }
 Assert-SetupEnvironment $environmentValues $managedN8n
+$selectedDashboard = [int]$environmentValues['CTI_DASHBOARD_PORT']
+$selectedN8n = [int]$environmentValues['N8N_PORT']
+if (-not $selectedDashboard) { $selectedDashboard = 8080 }
+if (-not $selectedN8n) { $selectedN8n = 5678 }
+if ($createdEnvironment -or $selectedDashboard -ne [int]$oldDashboardPort) { Assert-CtiPortAvailable $selectedDashboard }
+if ($managedN8n -and ($createdEnvironment -or $selectedN8n -ne [int]$oldN8nPort)) { Assert-CtiPortAvailable $selectedN8n }
+if (Test-Path -LiteralPath '.cti-owner.json') {
+    $owner = Read-CtiOwner $PSScriptRoot
+    if ($environmentValues['CTI_COMPOSE_PROJECT_NAME'] -cne $owner.project -or
+        $environmentValues['CTI_NETWORK_NAME'] -cne $owner.project -or $managedN8n -ne $owner.managed_n8n -or
+        ($managedN8n -and $environmentValues['N8N_CONTAINER'] -cne "$($owner.project)-n8n")) { Stop-Setup 'Configuration differs from recorded installation ownership.' }
+    [void](Get-CtiPlan $owner)
+}
+if ($PSBoundParameters.ContainsKey('DashboardPort')) { Set-EnvironmentValue 'CTI_DASHBOARD_PORT' ([string]$selectedDashboard) }
+if ($PSBoundParameters.ContainsKey('N8nPort')) {
+    Set-EnvironmentValue 'N8N_PORT' ([string]$selectedN8n)
+    if ($environmentValues['CTI_TELEGRAM_QUERY_ENABLED'] -ne 'true' -and $environmentValues['N8N_WEBHOOK_URL'] -match '^http://(localhost|127\.0\.0\.1):[0-9]+/$') {
+        Set-EnvironmentValue 'N8N_WEBHOOK_URL' "http://localhost:${selectedN8n}/"
+        $environmentValues['N8N_WEBHOOK_URL'] = "http://localhost:${selectedN8n}/"
+    }
+}
 
 Write-Step 'Validating and starting CTI services'
+# Pin Compose inputs; inherited COMPOSE_FILE/profiles must not redirect setup.
+$env:COMPOSE_FILE = Join-Path $PSScriptRoot 'compose.yml'
+$env:COMPOSE_PROFILES = if ($managedN8n) { 'managed-n8n' } else { '' }
+foreach ($key in $environmentValues.Keys) {
+    if ($key -cmatch '^(CTI_|N8N_|POSTGRES_)[A-Z0-9_]+$') { [Environment]::SetEnvironmentVariable($key, [string]$environmentValues[$key], 'Process') }
+}
+$env:COMPOSE_PROJECT_NAME = $environmentValues['CTI_COMPOSE_PROJECT_NAME']
 $composeArguments = @('compose')
 if ($managedN8n) { $composeArguments += @('--profile', 'managed-n8n') }
 Invoke-Docker ($composeArguments + @('config', '--quiet'))

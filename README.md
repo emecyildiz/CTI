@@ -13,7 +13,7 @@ The guided setup can deploy a local n8n container automatically. An existing n8n
 
 ## Guided installation from a release
 
-The examples below target `0.1.0-rc.7`. If those assets are not yet listed in
+The examples below target `0.1.0-rc.8`. If those assets are not yet listed in
 GitHub Releases, use the latest published tag and its matching documentation;
 the `main` branch can contain unreleased preparation work.
 
@@ -31,12 +31,51 @@ Download `CTI-Setup-<version>-win-x64.exe` and its `.sha256` file from GitHub Re
 
 The installer runs as the current user and does not request administrator elevation. Docker Desktop may independently require privileges during its own installation. The EXE is currently unsigned, so Windows SmartScreen may show an unrecognized-app warning; verify the published SHA-256 checksum before running it.
 
+### Windows ports and management (rc.8)
+
+These changes require the **rc.8 or newer Windows package**; rc.7 does not include them. Linux/macOS setup is unchanged in this package.
+
+Examples elsewhere in this document use default ports and the manual-install network name. For a new Windows setup, use the actual ports and `CTI_NETWORK_NAME` from its `.env` when connecting an external n8n instance. If external n8n is attached to that network, management intentionally refuses network removal until that external container is safely detached.
+
+- The Windows GUI accepts a dashboard port and a managed-n8n port (1–65535, different values). Services remain bound to `127.0.0.1`; this does not publish them to the Internet.
+- Existing port settings are loaded from `.env`. Explicit changes are validated; otherwise settings and secrets are retained. New/changed ports are checked for availability, although another process can still claim a port before Docker binds it. The installer never kills a conflicting process.
+- `setup.ps1 -DashboardPort 18080 -N8nPort 15678` provides the same options. `-N8nPort` cannot be used with external n8n. Internal container ports are unchanged; public Telegram routes are not rewritten.
+- Fresh Windows setups receive unique Docker project/network/container names and a `.cti-owner.json` record tied to the installation directory and Docker engine. Do not delete this record or rename/move the installation folder without a reviewed migration.
+
+Reopen the matching installer, choose the **existing installation folder**, select an action and click **Manage installation**. A read-only ownership check precedes the confirmation dialog:
+
+| Action | Containers/network | Database and managed n8n data | Local files |
+| --- | --- | --- | --- |
+| Stop | Stops containers | Retained | Retained |
+| Remove services | Removes owned containers/network | Retained | Retained, including keys needed to reuse the data |
+| Purge | Removes owned containers/network | Permanently deletes owned volumes | Deletes `.env`, ownership metadata and unchanged GUI-installed package files |
+
+**Purge is irreversible without a backup.** Docker Desktop, WSL, images/build cache, external n8n, backups, unknown files and modified package files are retained. Empty directories and the downloaded EXE may remain. Retained backups/modified files can still contain sensitive data; review them manually. ZIP-only setup does not generate a GUI package-file manifest, so its source files are retained. This is not a Windows Apps registration or a Docker/WSL uninstaller.
+
+Management refuses missing/legacy ownership records, a different Docker engine, relocated or linked installation paths, unexpected services, or resources shared with another container. It uses exact inspected resource IDs/names, not Docker prune or a broad Compose orphan cleanup. These checks prevent accidental cross-project deletion; they are not a security boundary against a malicious user who can edit the ownership records or control the Docker daemon.
+
+CLI preview (no mutation):
+
+```powershell
+.\manage.ps1 -Action Remove -Preview
+```
+
+To execute, pass `-ConfirmProject` with the exact project ID displayed by the preview. Use `-Action Purge` only after backing up and explicitly deciding to delete the data. Stop/Remove can be reversed by rerunning setup in the **same folder with the retained `.env` and ownership record**. If an operation fails, the log reports failure and configuration is retained until Docker cleanup completes; inspect and retry rather than deleting the folder first.
+
+Existing rc.7 and Linux/manual installations have no new ownership record. Automatic adoption/deletion is intentionally disabled; do not fabricate an ownership file. A separate migration review is required.
+
+Maintainer acceptance: `powershell -NoProfile -File tests/windows-lifecycle-docker.ps1 -Run` uses only the local `desktop-linux` Docker Desktop engine and a locally cached `node:24-alpine` image. It creates uniquely named synthetic service/data fixtures, tests lifecycle and cross-project guards, and cleans up only those fixtures. It does not install production CTI, validate real PostgreSQL/n8n state, or test the GUI. Result JSON and deliberately preserved synthetic backup files remain in a `cti-lifecycle-docker-*` directory under the local temporary directory.
+
+`powershell -NoProfile -File tests/windows-full-setup.ps1 -Run` separately tests actual PostgreSQL/n8n/dashboard setup on local Docker Desktop: custom ports, readiness, eight disabled workflows, repeat setup without duplicate imports, and Remove followed by setup with database data and configuration preserved. It creates a unique temporary installation and purges only that installation in cleanup. It may download images and build the dashboard; no AI credentials or Telegram messages are used. This passed on 7 September 2026, including cleanup, but is not a clean-machine or full graphical click-through acceptance test.
+
+Use a normal local installation directory (the GUI defaults to Local AppData). Reparse-point paths are rejected conservatively; some OneDrive-managed folders also fall into this category.
+
 ### ZIP installation and non-Windows systems
 
 On a Linux server, download the versioned terminal installer and its checksum from GitHub Releases:
 
 ```sh
-version=0.1.0-rc.7
+version=0.1.0-rc.8
 base="https://github.com/emecyildiz/CTI/releases/download/v$version"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh.sha256"
@@ -52,13 +91,13 @@ During an interactive managed-n8n installation, Telegram query support is presen
 For a non-interactive managed-n8n installation using the default directory:
 
 ```sh
-./CTI-Setup-0.1.0-rc.7-linux.sh --non-interactive
+./CTI-Setup-0.1.0-rc.8-linux.sh --non-interactive
 ```
 
 For a non-interactive server installation where a public HTTPS route already exists:
 
 ```sh
-./CTI-Setup-0.1.0-rc.7-linux.sh \
+./CTI-Setup-0.1.0-rc.8-linux.sh \
   --non-interactive \
   --telegram-webhook-url https://hooks.example.com/
 ```

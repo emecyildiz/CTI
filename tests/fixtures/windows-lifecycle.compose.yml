@@ -1,0 +1,34 @@
+services:
+  cti-db:
+    image: ${CTI_TEST_IMAGE:?local image required}
+    pull_policy: never
+    init: true
+    command: ["sleep", "infinity"]
+    volumes:
+      - cti_pgdata:/data
+    networks: [cti]
+  cti-dashboard:
+    image: ${CTI_TEST_IMAGE:?local image required}
+    pull_policy: never
+    init: true
+    command: ["node", "-e", "require('http').createServer((q,s)=>s.end('fixture')).listen(8080,'0.0.0.0')"]
+    ports:
+      - "127.0.0.1:${CTI_TEST_DASHBOARD_PORT}:8080"
+    networks: [cti]
+  cti-n8n:
+    image: ${CTI_TEST_IMAGE:?local image required}
+    pull_policy: never
+    init: true
+    command: ["node", "-e", "require('http').createServer((q,s)=>s.end('fixture')).listen(5678,'0.0.0.0')"]
+    volumes:
+      - cti_n8n_data:/data
+    ports:
+      - "127.0.0.1:${CTI_TEST_N8N_PORT}:5678"
+    networks: [cti]
+volumes:
+  cti_pgdata:
+  cti_n8n_data:
+networks:
+  cti:
+    name: ${CTI_TEST_PROJECT}
+    # Match public CTI's bridge network; only the two loopback ports are published.

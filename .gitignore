@@ -12,3 +12,6 @@ dist/
 
 .DS_Store
 Thumbs.db
+.cti-owner.json
+.cti-package-files.json
+.cti-installation.json

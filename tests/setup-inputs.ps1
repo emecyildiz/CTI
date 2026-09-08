@@ -5,7 +5,7 @@ $tokens = $null
 $parseErrors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repository 'setup.ps1'), [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
-$functionNames = @('Stop-Setup', 'ConvertTo-TelegramWebhookUrl', 'Assert-TelegramManagedN8n', 'Set-EnvironmentValue', 'Assert-SetupEnvironment')
+$functionNames = @('Stop-Setup', 'ConvertTo-TelegramWebhookUrl', 'Assert-TelegramManagedN8n', 'Set-EnvironmentValue', 'Assert-SetupEnvironment', 'Assert-CtiPortAvailable')
 foreach ($name in $functionNames) {
     $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $definition) { throw "Setup function is missing: $name" }
@@ -102,6 +102,27 @@ try {
     $externalEnvironment = $validEnvironment.Clone()
     $externalEnvironment.Remove('N8N_ENCRYPTION_KEY')
     Assert-SetupEnvironment $externalEnvironment $false
+    foreach ($port in @('0', '65536', '-1', 'abc', '8080:8080', "8080`nCTI_TEST=x")) {
+        $bad = $validEnvironment.Clone()
+        $bad.CTI_DASHBOARD_PORT = $port
+        Assert-Rejected { Assert-SetupEnvironment $bad $true } "invalid port $port"
+    }
+    $same = $validEnvironment.Clone()
+    $same.CTI_DASHBOARD_PORT = '5678'
+    Assert-Rejected { Assert-SetupEnvironment $same $true } 'duplicate service ports'
+    Assert-SetupEnvironment $same $false
+    $custom = $validEnvironment.Clone()
+    $custom.CTI_DASHBOARD_PORT = '18080'
+    $custom.N8N_PORT = '15678'
+    Assert-SetupEnvironment $custom $true
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Server.ExclusiveAddressUse = $true
+        $listener.Start()
+        $occupied = $listener.LocalEndpoint.Port
+        Assert-Rejected { Assert-CtiPortAvailable $occupied } 'occupied loopback port'
+    } finally { $listener.Stop() }
+    Assert-CtiPortAvailable $occupied
 } finally {
     $resolved = [IO.Path]::GetFullPath($temporaryDirectory)
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
@@ -110,4 +131,4 @@ try {
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
 }
-Write-Host 'PASS: PowerShell setup URL safety, environment preservation, existing-n8n guard, and preflight policy.'
+Write-Host 'PASS: PowerShell setup URL safety, environment preservation, existing-n8n guard, port validation/availability and preflight policy.'

@@ -12,7 +12,7 @@ archive="$test_dir/$name.zip"
 (cd "$test_dir" && sha256sum -c "$name.zip.sha256")
 unzip -t "$archive" > "$test_dir/integrity.log"
 unzip -Z1 "$archive" > "$test_dir/entries"
-for file in VERSION LICENSE compose.yml setup.sh setup.ps1 .env.example \
+for file in VERSION LICENSE compose.yml setup.sh setup.ps1 manage.ps1 scripts/windows-lifecycle.ps1 .env.example \
     app/cti/schema.sql app/cti-dashboard/Program.cs \
     workflows/n8n-workflow-error-alerts.json scripts/restore.sh; do
     grep -Fx "$name/$file" "$test_dir/entries" >/dev/null

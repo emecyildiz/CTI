@@ -36,7 +36,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: PowerShell setup security boundaries
         shell: powershell
-        run: ./tests/setup-inputs.ps1
+        run: |
+          ./tests/setup-inputs.ps1
+          ./tests/windows-lifecycle.ps1
+          ./tests/windows-setup-flow.ps1
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build Windows setup
+        run: dotnet build installer/windows/CtiInstaller.csproj --configuration Release --warnaserror
   n8n-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15
