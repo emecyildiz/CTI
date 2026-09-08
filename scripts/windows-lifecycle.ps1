@@ -108,7 +108,7 @@ function Get-CtiPackageCleanup([string]$Root) {
             }
         }
     }
-    foreach ($name in @('.env', '.cti-installation.json', '.cti-package-files.json', '.cti-owner.json')) {
+    foreach ($name in @('.env', '.cti-installation.json', '.cti-package-files.json', '.cti-update-state.json', '.cti-owner.json')) {
         $target = Join-Path $Root $name
         if (Test-Path -LiteralPath $target) {
             $item = Get-Item -LiteralPath $target -Force

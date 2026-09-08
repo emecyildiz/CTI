@@ -24,6 +24,7 @@ jobs:
           sh tests/recovery-diagnostics.sh
           sh tests/release-archive.sh
           dotnet run --project tests/dashboard-boundary/DashboardBoundary.Tests.csproj --configuration Release
+          dotnet run --project tests/installer-update/InstallerUpdate.Tests.csproj --configuration Release
           dotnet build app/cti-dashboard/CtiDashboard.csproj --configuration Release --warnaserror
       - name: Isolated SQL and recovery regression
         run: |
@@ -45,6 +46,8 @@ jobs:
           dotnet-version: '8.0.x'
       - name: Build Windows setup
         run: dotnet build installer/windows/CtiInstaller.csproj --configuration Release --warnaserror
+      - name: Installer update and repair boundaries
+        run: dotnet run --project tests/installer-update/InstallerUpdate.Tests.csproj --configuration Release
   n8n-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15

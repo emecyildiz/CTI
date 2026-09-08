@@ -1,3 +1,18 @@
+# 0.1.0-rc.9 — Windows update and repair safety
+
+- Installed/attempted version display with Install, Repair and Update actions.
+- Numeric RC/stable version comparison and downgrade refusal before package overwrite/setup; pending updates retain a high-water version receipt.
+- Default-No review of updates/repairs. Locally edited or untracked colliding files require explicit backup-and-replace consent. All replaced existing package files are backed up first; edits are not silently discarded or automatically merged.
+- A fresh preflight invalidates stale confirmation plans after source, target or metadata edits.
+- Successful custom installation folders appear in a local recent-folder list, without disk scanning or storing credentials.
+- Existing .env, Docker data, n8n mode and stored workflows are retained. Stored n8n workflows are explicitly NOT automatically upgraded, merged or re-imported.
+- Purge understands the pending-update receipt; package backups remain retained.
+- Cross-platform headless update tests and Windows lifecycle regression coverage are included in CI.
+
+Local Windows validation: 41 update assertions passed; symbolic-link creation was skipped because the host does not grant that privilege. Windows build is warning-free. Linux CI separately runs the link guard. These are isolated filesystem tests, not a real graphical upgrade, database rollback or clean-machine acceptance claim.
+
+Use the new installer for these protections: previously downloaded rc.8 and older EXEs cannot be retroactively hardened. Backups cover package files, not database/n8n volumes. Failed updates are resumable with the same/newer package but are not automatically rolled back. The EXE remains unsigned and this remains a release candidate for user testing.
+
 # 0.1.0-rc.8 — Windows ports and installation management
 
 - Windows GUI and PowerShell dashboard/managed-n8n port selection with loopback-only bindings, numeric/distinct-port checks, availability checks and saved setting preservation.

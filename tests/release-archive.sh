@@ -14,7 +14,8 @@ unzip -t "$archive" > "$test_dir/integrity.log"
 unzip -Z1 "$archive" > "$test_dir/entries"
 for file in VERSION LICENSE compose.yml setup.sh setup.ps1 manage.ps1 scripts/windows-lifecycle.ps1 .env.example \
     app/cti/schema.sql app/cti-dashboard/Program.cs \
-    workflows/n8n-workflow-error-alerts.json scripts/restore.sh; do
+    workflows/n8n-workflow-error-alerts.json scripts/restore.sh \
+    installer/windows/PackageUpdate.cs installer/windows/RecentInstallations.cs; do
     grep -Fx "$name/$file" "$test_dir/entries" >/dev/null
 done
 while IFS= read -r entry; do

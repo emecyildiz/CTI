@@ -13,7 +13,7 @@ The guided setup can deploy a local n8n container automatically. An existing n8n
 
 ## Guided installation from a release
 
-The examples below target `0.1.0-rc.8`. If those assets are not yet listed in
+The examples below target `0.1.0-rc.9`. If those assets are not yet listed in
 GitHub Releases, use the latest published tag and its matching documentation;
 the `main` branch can contain unreleased preparation work.
 
@@ -70,12 +70,28 @@ Maintainer acceptance: `powershell -NoProfile -File tests/windows-lifecycle-dock
 
 Use a normal local installation directory (the GUI defaults to Local AppData). Reparse-point paths are rejected conservatively; some OneDrive-managed folders also fall into this category.
 
+### Windows update and repair (rc.9)
+
+Downloading another EXE does not change an existing installation. When opened, the new installer displays the selected folder's installed/attempted version and chooses **Install**, **Repair** (same version), or **Update** (newer package). Successfully installed custom folders are remembered in a local recent-folder list; the installer does not scan your disks. Older installations are found by selecting their folder once.
+
+The rc.9 installer refuses a lower version before overwriting files or running setup. Version order is numeric `major.minor.patch`, then `-rc.N`, then the stable release. It checks `VERSION`, successful installation metadata and any pending-update receipt, so a failed newer attempt cannot silently be replaced by an older package. **This cannot retrofit protection into already downloaded rc.8 or older EXEs. Use the latest installer and do not run those old installers over newer installations.**
+
+For Repair/Update, a default-No confirmation shows local file conflicts. Unchanged package files are recognized using the previous hash manifest; unknown or modified colliding files are not silently trusted. Confirming explicitly permits **backup and replacement**; cancelling leaves installation files unchanged. Before replacement, all existing files to be overwritten and prior package/version metadata are copied to `backups/installer-<timestamp>-<id>/`. Modified contents are preserved in that backup, not merged into the new package. Review and transfer intentional customizations manually. A missing legacy manifest triggers conservative conflict detection. Unknown files outside the incoming package are untouched; obsolete package files are retained rather than recursively removed.
+
+The installer rechecks the reviewed file hashes before applying the update. Backups may contain custom code, secrets or sensitive notes: keep them private. These are **package-file backups, not PostgreSQL/n8n volume backups**. Back up your data separately before an upgrade. Setup/database migrations do not have an automatic transactional rollback. If copying/setup fails, a `.cti-update-state.json` receipt retains the attempted version; retry with the same or a newer installer after reviewing the error. Do not delete version/ownership receipts to bypass a refusal.
+
+Existing `.env`, Docker volumes and n8n mode are retained. **Existing n8n workflows and credentials are preserved, not upgraded or re-imported automatically.** Updated workflow JSON files in the package do not update stored n8n workflows. Review release-specific workflow migration instructions before changing them; this candidate does not provide an automatic workflow merge. Repair also does not reset or activate workflows.
+
+The recent-folder list is stored under `%LOCALAPPDATA%/Emecworks/CTI-Installer/installations.json`; it contains only paths, not credentials. Missing/deleted folders are ignored. It is a convenience list, not ownership authority or Windows Apps registration. Purge retains package backups and this recent-folder preference file; the removed installation no longer appears when its package files are gone.
+
+Headless regression tests: `dotnet run --project tests/installer-update/InstallerUpdate.Tests.csproj --configuration Release`. These use isolated temporary files, not Docker, AI credentials or a user's installation. End-to-end graphical upgrade/repair on a clean Windows machine remains a separate acceptance step.
+
 ### ZIP installation and non-Windows systems
 
 On a Linux server, download the versioned terminal installer and its checksum from GitHub Releases:
 
 ```sh
-version=0.1.0-rc.8
+version=0.1.0-rc.9
 base="https://github.com/emecyildiz/CTI/releases/download/v$version"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh.sha256"
@@ -91,13 +107,13 @@ During an interactive managed-n8n installation, Telegram query support is presen
 For a non-interactive managed-n8n installation using the default directory:
 
 ```sh
-./CTI-Setup-0.1.0-rc.8-linux.sh --non-interactive
+./CTI-Setup-0.1.0-rc.9-linux.sh --non-interactive
 ```
 
 For a non-interactive server installation where a public HTTPS route already exists:
 
 ```sh
-./CTI-Setup-0.1.0-rc.8-linux.sh \
+./CTI-Setup-0.1.0-rc.9-linux.sh \
   --non-interactive \
   --telegram-webhook-url https://hooks.example.com/
 ```

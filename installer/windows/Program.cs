@@ -41,14 +41,19 @@ internal sealed class InstallerForm : Form
     private readonly NumericUpDown n8nPort = new() { Minimum = 1, Maximum = 65535, Value = 5678, Width = 85 };
     private readonly ComboBox managementAction = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210 };
     private readonly Button manageButton = new() { Text = "Manage installation", AutoSize = true };
+    private readonly Label installationStatus = new() { AutoSize = true, MaximumSize = new Size(730, 0) };
+    private readonly ComboBox recentInstallations = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private bool dockerReady;
     private bool operationRunning;
+    private static string InstallerVersion => Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+        .InformationalVersion.Split('+')[0];
 
     public InstallerForm()
     {
         Text = "CTI Self-Hosted Setup";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(800, 740);
-        Size = new Size(900, 800);
+        MinimumSize = new Size(800, 800);
+        Size = new Size(900, 860);
         BackColor = Color.FromArgb(246, 247, 249);
         Font = new Font("Segoe UI", 9.5f);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -95,6 +100,7 @@ internal sealed class InstallerForm : Form
 
         Shown += async (_, _) => { LoadSavedOptions(); await CheckRequirementsAsync(); };
         installPath.Leave += (_, _) => LoadSavedOptions();
+        installPath.TextChanged += (_, _) => RefreshInstallAction();
         FormClosing += (_, e) =>
         {
             if (!operationRunning) return;
@@ -123,6 +129,21 @@ internal sealed class InstallerForm : Form
         browseButton.Click += (_, _) => BrowseForDirectory();
         layout.Controls.Add(installPath, 0, 0);
         layout.Controls.Add(browseButton, 1, 0);
+        var known = RecentInstallations.Read(RecentInstallations.DefaultStore);
+        recentInstallations.Items.Add("Previously installed folders…");
+        recentInstallations.Items.AddRange(known.Cast<object>().ToArray());
+        recentInstallations.SelectedIndex = 0;
+        recentInstallations.AccessibleName = "Previously installed CTI folders";
+        recentInstallations.Visible = known.Count > 0;
+        recentInstallations.SelectionChangeCommitted += (_, _) =>
+        {
+            if (recentInstallations.SelectedIndex > 0 && recentInstallations.SelectedItem is string path) { installPath.Text = path; LoadSavedOptions(); }
+        };
+        layout.Controls.Add(recentInstallations, 0, 1);
+        layout.SetColumnSpan(recentInstallations, 2);
+        layout.Controls.Add(installationStatus, 0, 2);
+        layout.SetColumnSpan(installationStatus, 2);
+        installPath.AccessibleName = "CTI installation folder";
         panel.Controls.Add(layout);
         return panel;
     }
@@ -271,6 +292,7 @@ internal sealed class InstallerForm : Form
     private void LoadSavedOptions()
     {
         if (operationRunning) return;
+        RefreshInstallAction();
         try
         {
             var env = Path.Combine(Path.GetFullPath(installPath.Text), ".env");
@@ -289,6 +311,30 @@ internal sealed class InstallerForm : Form
         catch { AppendLog("Could not load saved settings. Check the installation folder before proceeding."); }
     }
 
+    private void RefreshInstallAction()
+    {
+        if (operationRunning) return;
+        try
+        {
+            var destination = ValidateDestination(installPath.Text);
+            var action = PackageUpdate.Describe(destination, InstallerVersion);
+            var installed = PackageUpdate.InstalledVersion(destination);
+            installButton.Text = action + " CTI";
+            installationStatus.Text = installed is null ? $"New installation — package {InstallerVersion}"
+                : $"Installed/attempted: {installed} — package: {InstallerVersion} — {action}. Existing n8n workflows are preserved.";
+            installationStatus.ForeColor = Color.FromArgb(82, 89, 99);
+            var hasConfig = File.Exists(Path.Combine(destination, ".env"));
+            managedN8n.Enabled = existingN8n.Enabled = !hasConfig;
+            installButton.Enabled = dockerReady && HasEmbeddedPayload();
+        }
+        catch (Exception exception)
+        {
+            installationStatus.Text = exception.Message;
+            installationStatus.ForeColor = Color.FromArgb(190, 45, 45);
+            installButton.Enabled = false;
+        }
+    }
+
     private async Task ManageAsync()
     {
         if (operationRunning) return;
@@ -296,6 +342,7 @@ internal sealed class InstallerForm : Form
         try
         {
             var destination = Path.GetFullPath(installPath.Text);
+            _ = PackageUpdate.Describe(destination, InstallerVersion);
             var ownerPath = Path.Combine(destination, ".cti-owner.json");
             if (!File.Exists(ownerPath)) throw new InvalidOperationException("No ownership record. Automatic removal of legacy rc.7 installations is disabled.");
             using var owner = JsonDocument.Parse(File.ReadAllText(ownerPath));
@@ -321,13 +368,14 @@ internal sealed class InstallerForm : Form
             SetRequirement("Management completed. See the log for retained files/data.", Color.FromArgb(24, 128, 56));
         }
         catch (Exception exception) { AppendLog(exception.Message); MessageBox.Show(this, exception.Message, "CTI management", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
-        finally { TryDeleteOwnedTemporaryDirectory(temporary); SetBusy(false); SetInputsEnabled(true); installButton.Enabled = HasEmbeddedPayload(); }
+        finally { TryDeleteOwnedTemporaryDirectory(temporary); SetBusy(false); SetInputsEnabled(true); RefreshInstallAction(); }
     }
 
     private async Task CheckRequirementsAsync()
     {
         if (operationRunning) return;
         SetBusy(true);
+        dockerReady = false;
         installButton.Enabled = false;
         SetRequirement("Checking Docker CLI…", Color.FromArgb(82, 89, 99));
         AppendLog("Checking Docker prerequisites…");
@@ -343,6 +391,7 @@ internal sealed class InstallerForm : Form
             if (engine.ExitCode != 0) throw new InvalidOperationException("Docker Desktop is installed, but its engine is not running.");
 
             SetRequirement($"Docker is ready (engine {engine.Output.Trim()}).", Color.FromArgb(24, 128, 56));
+            dockerReady = true;
             AppendLog("Docker Desktop and Compose are ready.");
             installButton.Enabled = HasEmbeddedPayload();
             if (!installButton.Enabled)
@@ -359,6 +408,7 @@ internal sealed class InstallerForm : Form
         finally
         {
             SetBusy(false);
+            RefreshInstallAction();
         }
     }
 
@@ -369,6 +419,7 @@ internal sealed class InstallerForm : Form
         try
         {
             destination = ValidateDestination(installPath.Text);
+            _ = PackageUpdate.Describe(destination, InstallerVersion);
             if (managedN8n.Checked && dashboardPort.Value == n8nPort.Value) throw new InvalidOperationException("Dashboard and managed n8n ports must differ.");
         }
         catch (Exception exception)
@@ -388,7 +439,18 @@ internal sealed class InstallerForm : Form
         {
             Directory.CreateDirectory(temporaryDirectory);
             var packageRoot = ExtractPayload(temporaryDirectory);
-            CopyPackage(packageRoot, destination);
+            var plan = PackageUpdate.Prepare(packageRoot, destination, InstallerVersion);
+            var allowConflicts = false;
+            if (plan.InstalledVersion is not null)
+            {
+                var changes = plan.Conflicts.Count == 0 ? "No local file conflicts detected."
+                    : $"{plan.Conflicts.Count} locally modified or untracked package files will be backed up and replaced:\n" + string.Join("\n", plan.Conflicts.Take(12));
+                var notice = $"{plan.Action} CTI {plan.InstalledVersion} → {plan.TargetVersion}?\n\n{changes}\n\nReplaced files are backed up under backups/installer-* before overwriting. Backups may contain your edits or secrets; keep them private. The .env and Docker data are retained. Existing n8n workflows and credentials are NOT automatically upgraded or re-imported. Database migrations are not automatically rolled back.\n\nContinue?";
+                if (MessageBox.Show(this, notice, "Review CTI " + plan.Action, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+                allowConflicts = true;
+            }
+            var copied = PackageUpdate.Apply(plan, allowConflicts);
+            if (copied.BackupDirectory is not null) AppendLog("Previous package backup: " + copied.BackupDirectory);
             AppendLog("Installation files are ready.");
 
             var setupScript = Path.Combine(destination, "setup.ps1");
@@ -406,14 +468,18 @@ internal sealed class InstallerForm : Form
             var result = await RunProcessAsync(powershell, arguments, destination, true, TimeSpan.FromMinutes(20));
             if (result.ExitCode != 0) throw new InvalidOperationException($"Setup stopped with exit code {result.ExitCode}.");
 
-            WriteInstallationMetadata(destination);
+            PackageUpdate.Complete(destination, InstallerVersion);
+            try { RecentInstallations.Remember(RecentInstallations.DefaultStore, destination); }
+            catch { AppendLog("Installed successfully, but the recent-folder list could not be saved. Keep the installation path."); }
             dashboardUrl = $"http://127.0.0.1:{dashboardPort.Value}";
             n8nUrl = $"http://127.0.0.1:{n8nPort.Value}";
             SetRequirement("CTI Self-Hosted was installed successfully.", Color.FromArgb(24, 128, 56));
             AppendLog("Installation completed successfully.");
             openDashboardButton.Enabled = true;
             openN8nButton.Enabled = managedN8n.Checked;
-            MessageBox.Show(this, "CTI Self-Hosted is ready. Create the first n8n owner account, then continue from the dashboard setup page.", "Installation complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, plan.InstalledVersion is null
+                ? "CTI Self-Hosted is ready. Create the first n8n owner account, then continue from the dashboard setup page."
+                : "CTI package setup completed. Existing n8n workflows and credentials were preserved, not upgraded. Review release notes before making workflow changes.", "Installation complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception exception)
         {
@@ -426,7 +492,7 @@ internal sealed class InstallerForm : Form
             TryDeleteOwnedTemporaryDirectory(temporaryDirectory);
             SetBusy(false);
             SetInputsEnabled(true);
-            installButton.Enabled = HasEmbeddedPayload();
+            RefreshInstallAction();
         }
     }
 
@@ -446,6 +512,8 @@ internal sealed class InstallerForm : Form
         var recognized = File.Exists(Path.Combine(fullPath, "compose.yml"))
             && File.Exists(Path.Combine(fullPath, "setup.ps1"))
             && File.Exists(Path.Combine(fullPath, "VERSION"));
+        recognized |= File.Exists(Path.Combine(fullPath, PackageUpdate.StateName)) && PackageUpdate.InstalledVersion(fullPath) is not null;
+        recognized |= File.Exists(Path.Combine(fullPath, ".cti-installation.json")) && PackageUpdate.InstalledVersion(fullPath) is not null;
         if (!recognized)
             throw new InvalidOperationException("The selected folder is not empty and is not an existing CTI Self-Hosted installation.");
         return fullPath;
@@ -525,34 +593,8 @@ internal sealed class InstallerForm : Form
 
     private static void CopyPackage(string source, string destination)
     {
-        AssertNoReparsePath(destination);
-        Directory.CreateDirectory(destination);
-        var destinationRoot = Path.GetFullPath(destination);
-        var prefix = destinationRoot.EndsWith(Path.DirectorySeparatorChar) ? destinationRoot : destinationRoot + Path.DirectorySeparatorChar;
-        foreach (var directory in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
-        {
-            var relative = Path.GetRelativePath(source, directory);
-            var target = Path.GetFullPath(Path.Combine(destinationRoot, relative));
-            if (!target.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Unsafe package directory path.");
-            AssertNoReparsePath(target);
-            Directory.CreateDirectory(target);
-        }
-        var copied = new List<object>();
-        foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
-        {
-            var relative = Path.GetRelativePath(source, file);
-            if (relative.Equals(".env", StringComparison.OrdinalIgnoreCase)) continue;
-            var target = Path.GetFullPath(Path.Combine(destinationRoot, relative));
-            if (!target.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Unsafe package file path.");
-            AssertNoReparsePath(target);
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.Copy(file, target, overwrite: true);
-            using var stream = File.OpenRead(target);
-            copied.Add(new { path = relative, sha256 = Convert.ToHexString(SHA256.HashData(stream)) });
-        }
-        var manifest = Path.Combine(destinationRoot, ".cti-package-files.json");
-        AssertNoReparsePath(manifest);
-        File.WriteAllText(manifest, JsonSerializer.Serialize(copied));
+        var plan = PackageUpdate.Prepare(source, destination, InstallerVersion);
+        PackageUpdate.Apply(plan, false);
     }
 
     private static void AssertNoReparsePath(string path)
@@ -562,21 +604,6 @@ internal sealed class InstallerForm : Form
             if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidOperationException("Installation paths must not traverse a junction or symbolic link.");
         }
-    }
-
-    private static void WriteInstallationMetadata(string destination)
-    {
-        var versionPath = Path.Combine(destination, "VERSION");
-        var metadata = new
-        {
-            product = "CTI Self-Hosted",
-            version = File.Exists(versionPath) ? File.ReadAllText(versionPath).Trim() : "unknown",
-            installed_at_utc = DateTimeOffset.UtcNow,
-            installer = "windows-gui",
-        };
-        var path = Path.Combine(destination, ".cti-installation.json");
-        AssertNoReparsePath(path);
-        File.WriteAllText(path, JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true }));
     }
 
     private async Task<ProcessResult> RunProcessAsync(string fileName, IEnumerable<string> arguments, string? workingDirectory, bool streamToLog, TimeSpan timeout)
@@ -664,10 +691,12 @@ internal sealed class InstallerForm : Form
     {
         installPath.Enabled = enabled;
         browseButton.Enabled = enabled;
-        managedN8n.Enabled = enabled;
-        existingN8n.Enabled = enabled;
+        var hasConfig = File.Exists(Path.Combine(installPath.Text, ".env"));
+        managedN8n.Enabled = enabled && !hasConfig;
+        existingN8n.Enabled = enabled && !hasConfig;
         dashboardPort.Enabled = enabled;
         n8nPort.Enabled = enabled && managedN8n.Checked;
+        recentInstallations.Enabled = enabled;
     }
 
     private static void OpenUrl(string url)

@@ -81,6 +81,7 @@ try {
     [IO.File]::WriteAllText($manifest, ($entries | ConvertTo-Json))
     [IO.File]::WriteAllText($modified, 'user edits')
     [IO.File]::WriteAllText((Join-Path $script:root '.env'), 'dummy=test')
+    [IO.File]::WriteAllText((Join-Path $script:root '.cti-update-state.json'), '{"product":"CTI Self-Hosted","version":"0.1.0-rc.9"}')
     $script:scenario = 'delete-failed'
     $caught = $false
     try { Invoke-CtiManagement $script:root 'Purge' $false $script:project } catch { $caught = $true }
@@ -97,6 +98,7 @@ try {
     Assert-True (Test-Path $modified) 'modified file retained'
     Assert-True (Test-Path $unknown) 'unknown backup retained'
     Assert-True (-not (Test-Path (Join-Path $script:root '.env'))) 'purge removes config'
+    Assert-True (-not (Test-Path (Join-Path $script:root '.cti-update-state.json'))) 'purge removes pending update receipt'
     Write-Owner
     $script:scenario = 'empty'; $script:mutations = @()
     Invoke-CtiManagement $script:root 'Remove' $false $script:project
