@@ -24,6 +24,8 @@ internal sealed class InstallerForm : Form
 {
     private const string PayloadResourceName = "CtiInstaller.Payload.zip";
     private string dashboardUrl = "http://127.0.0.1:8080";
+    private string setupUrl = "http://127.0.0.1:8080/setup";
+    private bool guideToSetup;
     private string n8nUrl = "http://127.0.0.1:5678";
 
     private readonly TextBox installPath = new();
@@ -36,6 +38,7 @@ internal sealed class InstallerForm : Form
     private readonly Button checkButton = new();
     private readonly Button browseButton = new();
     private readonly Button openDashboardButton = new();
+    private readonly Button openSetupButton = new();
     private readonly Button openN8nButton = new();
     private readonly NumericUpDown dashboardPort = new() { Minimum = 1, Maximum = 65535, Value = 8080, Width = 85 };
     private readonly NumericUpDown n8nPort = new() { Minimum = 1, Maximum = 65535, Value = 5678, Width = 85 };
@@ -261,13 +264,18 @@ internal sealed class InstallerForm : Form
         openDashboardButton.Text = "Open dashboard";
         openDashboardButton.AutoSize = true;
         openDashboardButton.Enabled = false;
-        openDashboardButton.Click += (_, _) => OpenUrl(dashboardUrl);
+        openDashboardButton.Click += (_, _) => OpenUrl(guideToSetup ? setupUrl : dashboardUrl);
+        openSetupButton.Text = "Open setup";
+        openSetupButton.AutoSize = true;
+        openSetupButton.Enabled = false;
+        openSetupButton.Click += (_, _) => OpenUrl(setupUrl);
         openN8nButton.Text = "Open n8n";
         openN8nButton.AutoSize = true;
         openN8nButton.Enabled = false;
         openN8nButton.Click += (_, _) => OpenUrl(n8nUrl);
         panel.Controls.Add(installButton);
         panel.Controls.Add(openDashboardButton);
+        panel.Controls.Add(openSetupButton);
         panel.Controls.Add(openN8nButton);
         managementAction.Items.AddRange(["Stop (keep data)", "Remove services (keep data)", "Purge CTI data and package"]);
         managementAction.SelectedIndex = 0;
@@ -364,6 +372,7 @@ internal sealed class InstallerForm : Form
             var result = await RunProcessAsync(powershell, args.Concat(["-ConfirmProject", project]), package, true, TimeSpan.FromMinutes(5));
             if (result.ExitCode != 0) throw new InvalidOperationException("Management stopped on an error. Some earlier steps may have completed; review the log and retry after resolving the cause.");
             openDashboardButton.Enabled = false;
+            openSetupButton.Enabled = false;
             openN8nButton.Enabled = false;
             SetRequirement("Management completed. See the log for retained files/data.", Color.FromArgb(24, 128, 56));
         }
@@ -431,6 +440,7 @@ internal sealed class InstallerForm : Form
         SetBusy(true);
         SetInputsEnabled(false);
         openDashboardButton.Enabled = false;
+        openSetupButton.Enabled = false;
         openN8nButton.Enabled = false;
         AppendLog($"Installing into {destination}");
 
@@ -471,15 +481,19 @@ internal sealed class InstallerForm : Form
             PackageUpdate.Complete(destination, InstallerVersion);
             try { RecentInstallations.Remember(RecentInstallations.DefaultStore, destination); }
             catch { AppendLog("Installed successfully, but the recent-folder list could not be saved. Keep the installation path."); }
-            dashboardUrl = $"http://127.0.0.1:{dashboardPort.Value}";
+            dashboardUrl = SetupNavigation.Url((int)dashboardPort.Value, false);
+            setupUrl = SetupNavigation.Url((int)dashboardPort.Value, true);
+            guideToSetup = plan.InstalledVersion is null;
+            openDashboardButton.Text = SetupNavigation.PrimaryLabel(guideToSetup);
             n8nUrl = $"http://127.0.0.1:{n8nPort.Value}";
             SetRequirement("CTI Self-Hosted was installed successfully.", Color.FromArgb(24, 128, 56));
             AppendLog("Installation completed successfully.");
             openDashboardButton.Enabled = true;
+            openSetupButton.Enabled = true;
             openN8nButton.Enabled = managedN8n.Checked;
             MessageBox.Show(this, plan.InstalledVersion is null
-                ? "CTI Self-Hosted is ready. Create the first n8n owner account, then continue from the dashboard setup page."
-                : "CTI package setup completed. Existing n8n workflows and credentials were preserved, not upgraded. Review release notes before making workflow changes.", "Installation complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ? "CTI services are installed. Create the first n8n owner account if needed, then click Continue setup to configure CTI. Workflows remain disabled until you explicitly activate them."
+                : "CTI package setup completed. Existing n8n workflows and credentials were preserved, not upgraded. Use Open setup to finish or review configuration; package installation does not mean configuration is complete.", "Installation complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception exception)
         {

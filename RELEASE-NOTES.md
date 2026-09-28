@@ -1,3 +1,15 @@
+# 0.1.0-rc.10 — Setup recovery and guided configuration
+
+- Fix the setup Referrer-Policy / native form Origin conflict while preserving mandatory Origin, CSRF and local Host checks. Rejected setup requests now explain that no changes were saved and how to retry safely.
+- Fresh Windows installations offer Continue setup on the selected port. Repair/update keeps Open dashboard and also provides Open setup. PowerShell prints the setup URL separately.
+- Add a next-step guide and section links. Saved AI profiles and source selections are not presented as verified credentials or activated workflows. Non-bundled AI providers still require a compatible workflow adapter.
+- Replace misleading ready/passed labels with observed connection and configuration states.
+- Add repeatable isolated real-PostgreSQL setup-record acceptance (PowerShell 7 and local Docker Desktop). No real provider credentials or workflow activation are needed.
+
+Validation: dashboard boundary/guide tests, 52 installer assertions, Windows mock setup flow and warning-free Windows build passed. Real PostgreSQL acceptance confirmed AI/source persistence, rejected-request state preservation and unavailable-n8n HTTP 503. Native-browser form policy behavior was separately verified using an isolated fixture. These do not replace graphical installer acceptance or successful real n8n credential/readiness validation.
+
+Existing configuration/data preservation and update consent rules remain unchanged. There is no automatic detection of completed setup, no full setup wizard and no new topic/source expansion in this candidate. The EXE remains unsigned; this is not stable-release approval.
+
 # 0.1.0-rc.9 — Windows update and repair safety
 
 - Installed/attempted version display with Install, Repair and Update actions.

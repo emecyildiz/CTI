@@ -80,7 +80,7 @@ app.Use(async (context, next) =>
     context.Response.Headers["Pragma"] = "no-cache";
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["X-Frame-Options"] = "DENY";
-    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    context.Response.Headers["Referrer-Policy"] = SetupRequestBoundary.ReferrerPolicy(context.Request.Path);
     context.Response.Headers["Content-Security-Policy"] =
         "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
     await next();
@@ -206,7 +206,7 @@ app.MapPost("/setup/ai-profile", async (
     var form = await context.Request.ReadFormAsync(cancellationToken);
     if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
     {
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return SetupRequestBoundary.Rejected();
     }
 
     var providerType = form["provider_type"].FirstOrDefault()?.Trim().ToLowerInvariant() ?? string.Empty;
@@ -280,7 +280,7 @@ app.MapPost("/setup/sources", async (
     var form = await context.Request.ReadFormAsync(cancellationToken);
     if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
     {
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return SetupRequestBoundary.Rejected();
     }
 
     var selectedSources = form["source"]
@@ -354,7 +354,7 @@ app.MapPost("/setup/credential-handoff", async (
     var form = await context.Request.ReadFormAsync(cancellationToken);
     if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
     {
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return SetupRequestBoundary.Rejected();
     }
 
     await using (var command = dataSource.CreateCommand("""
@@ -432,7 +432,7 @@ app.MapPost("/setup/workflow-mapping", async (
     var form = await context.Request.ReadFormAsync(cancellationToken);
     if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
     {
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return SetupRequestBoundary.Rejected();
     }
 
     await using (var command = dataSource.CreateCommand("""
@@ -506,7 +506,7 @@ app.MapPost("/setup/postgres-credential-handoff", async (
     var form = await context.Request.ReadFormAsync(cancellationToken);
     if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
     {
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return SetupRequestBoundary.Rejected();
     }
 
     var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
@@ -565,7 +565,7 @@ app.MapPost("/setup/postgres-workflow-mapping", async (
     var form = await context.Request.ReadFormAsync(cancellationToken);
     if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
     {
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return SetupRequestBoundary.Rejected();
     }
 
     var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
@@ -621,7 +621,7 @@ app.MapPost("/setup/telegram-credential-handoff", async (
     var form = await context.Request.ReadFormAsync(cancellationToken);
     if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
     {
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return SetupRequestBoundary.Rejected();
     }
 
     var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
@@ -680,7 +680,7 @@ app.MapPost("/setup/telegram-workflow-mapping", async (
     var form = await context.Request.ReadFormAsync(cancellationToken);
     if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
     {
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return SetupRequestBoundary.Rejected();
     }
 
     var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
@@ -739,7 +739,7 @@ app.MapPost("/setup/readiness", async (
     var form = await context.Request.ReadFormAsync(cancellationToken);
     if (!IsSameSetupOrigin(context.Request) || !HasValidSetupCsrfToken(context, form))
     {
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return SetupRequestBoundary.Rejected();
     }
 
     var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
@@ -1035,11 +1035,7 @@ static bool IsValidTelegramPrivateId(string value) =>
 
 static bool IsSameSetupOrigin(HttpRequest request)
 {
-    var origin = request.Headers.Origin.FirstOrDefault();
-    return Uri.TryCreate(origin, UriKind.Absolute, out var originUri) &&
-           string.Equals(originUri.Authority, request.Host.Value, StringComparison.OrdinalIgnoreCase) &&
-           (string.Equals(originUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(originUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
+    return SetupRequestBoundary.IsSameOrigin(request);
 }
 
 static string NormalizeFilter(string? value, int maxLength)
@@ -2937,6 +2933,8 @@ internal static class HtmlPages
                                   aiProvider.ProfileDefined &&
                                   string.Equals(aiProvider.ProviderKey, "google_gemini", StringComparison.Ordinal) &&
                                   string.Equals(aiProvider.AdapterKey, "google_gemini", StringComparison.Ordinal);
+        var nextStep = SetupGuide.Next(handoffReady, aiProvider.ProfileDefined,
+            aiProvider.AdapterStatus == "bundled", status.EnabledSourceCount);
         var credentialForm = credentialFormReady
             ? $$"""
                 <form class="credential-form" method="post" action="/setup/credential-handoff" autocomplete="off">
@@ -3010,14 +3008,27 @@ internal static class HtmlPages
             <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
             <aside class="setup-notice"><strong>One-time credential handoff</strong><span>API keys are accepted only by the protected handoff form, forwarded directly to n8n, and never stored in the CTI database.</span></aside>
             {{savedNotice}}
+            <section class="setup-next setup-panel" aria-labelledby="setup-next-title">
+              <p class="eyebrow">START HERE</p>
+              <h2 id="setup-next-title">{{E(nextStep.Title)}}</h2>
+              <p>{{E(nextStep.Detail)}}</p>
+              <a class="setup-next-link" href="{{E(nextStep.Target)}}">Go to this step →</a>
+              <nav class="setup-quick-links" aria-label="Setup sections">
+                <a href="#n8n-check">n8n connection</a><a href="#ai-setup">AI provider &amp; key</a>
+                <a href="#source-setup">News sources</a><a href="#database-setup">Database access</a>
+                <a href="#telegram-setup">Telegram (optional)</a><a href="#readiness-setup">Final check</a>
+              </nav>
+              <p>Only observed state is shown below. Saved profiles are not proof that credentials work.
+              No workflow is activated automatically.</p>
+            </section>
             <ol class="setup-steps" aria-label="Setup progress">
-              <li class="complete"><span>01</span><strong>System check</strong><small>Passed</small></li>
-              <li class="active"><span>02</span><strong>AI provider</strong><small>Profile model ready</small></li>
-              <li><span>03</span><strong>Sources &amp; credentials</strong><small>Catalog available</small></li>
-              <li><span>04</span><strong>Review &amp; activate</strong><small>Read-only audit</small></li>
+              <li><span>01</span><strong>n8n connection</strong><small>{{(handoffReady ? "Connection boundary checked" : "Needs attention")}}</small></li>
+              <li><span>02</span><strong>AI provider</strong><small>{{(aiProvider.ProfileDefined ? "Profile saved; key not verified here" : "Not configured")}}</small></li>
+              <li><span>03</span><strong>News sources</strong><small>{{status.EnabledSourceCount}} selected; credentials need review</small></li>
+              <li><span>04</span><strong>Final check</strong><small>Run a fresh read-only audit</small></li>
             </ol>
             <section class="setup-panel">
-              <div class="setup-heading"><div><p class="eyebrow">STEP 01</p><h2>System check</h2></div><span class="check-state ready">Ready</span></div>
+              <div class="setup-heading"><div><p class="eyebrow">SYSTEM STATUS</p><h2>Dashboard and database</h2></div><span class="check-state ready">Responding</span></div>
               <div class="system-grid">
                 <article><span>Dashboard</span><strong>Online</strong><small>The private interface is responding.</small></article>
                 <article><span>Database schema</span><strong>Version {{status.SchemaVersion}}</strong><small>The restricted status view is available.</small></article>
@@ -3027,7 +3038,7 @@ internal static class HtmlPages
                 <article><span>CTI database writes</span><strong>Profile and source state only</strong><small>Credential material remains outside the PostgreSQL schema.</small></article>
               </div>
             </section>
-            <section class="setup-panel ai-panel">
+            <section class="setup-panel ai-panel" id="ai-setup">
               <div class="setup-heading"><div><p class="eyebrow">STEP 02</p><h2>AI provider profile</h2></div><span class="check-state {{(aiProvider.ProfileDefined ? "ready" : "warning")}}">{{(aiProvider.ProfileDefined ? "Profile defined" : "Not configured")}}</span></div>
               <div class="ai-profile-grid">
                 <article><span>Provider</span><strong>{{E(providerLabel)}}</strong><small>Stable key: {{E(aiProvider.ProviderKey ?? "—")}}</small></article>
@@ -3052,7 +3063,7 @@ internal static class HtmlPages
                   <article><strong>Custom provider</strong><span class="check-state warning">Manual mapping</span><p>The validated prompt and JSON contract can be reused after a compatible workflow adapter is supplied.</p></article>
                 </div>
               </div>
-              <div class="handoff-section">
+              <div class="handoff-section" id="n8n-check">
                 <div class="setup-heading"><div><p class="eyebrow">CREDENTIAL HANDOFF PREFLIGHT</p><h3>n8n boundary check</h3></div><span class="check-state {{(handoffReady ? "ready" : "warning")}}">{{(handoffReady ? "Compatible" : "Not ready")}}</span></div>
                 <div class="handoff-grid">
                   <article><span>Network reachability</span><strong>{{(n8nStatus.Reachable ? "Reachable" : "Unavailable")}}</strong><small>The probe sends no API key or credential data.</small></article>
@@ -3067,7 +3078,7 @@ internal static class HtmlPages
                 {{workflowMappingForm}}
               </div>
             </section>
-            <section class="setup-panel source-panel">
+            <section class="setup-panel source-panel" id="source-setup">
               <div class="setup-heading"><div><p class="eyebrow">STEP 03</p><h2>Reviewed sources</h2></div><span class="check-state ready">Allowlisted catalog</span></div>
               <p class="section-intro">Choose from the bundled and reviewed source definitions. Feed URLs, article hosts, selectors, and trust scores cannot be edited from this screen.</p>
               <form class="source-form" method="post" action="/setup/sources">
@@ -3076,7 +3087,7 @@ internal static class HtmlPages
                 <div class="form-actions"><p>Select at least one source. Changes take effect when the next Source Collection run loads its source list.</p><button type="submit">Save source selection</button></div>
               </form>
             </section>
-            <section class="setup-panel database-panel">
+            <section class="setup-panel database-panel" id="database-setup">
               <div class="setup-heading"><div><p class="eyebrow">STEP 03</p><h2>PostgreSQL workflow access</h2></div><span class="check-state warning">Manual confirmation</span></div>
               <p class="section-intro">The generated application-role password is handed directly to n8n. The database owner and dashboard roles are never used by workflow nodes.</p>
               <div class="handoff-section database-handoff-section">
@@ -3088,7 +3099,7 @@ internal static class HtmlPages
                 {{postgresMappingForm}}
               </div>
             </section>
-            <section class="setup-panel telegram-panel">
+            <section class="setup-panel telegram-panel" id="telegram-setup">
               <div class="setup-heading"><div><p class="eyebrow">STEP 03 · OPTIONAL</p><h2>Private Telegram integration</h2></div><span class="check-state warning">Disabled by default</span></div>
               <p class="section-intro">Reports and error alerts are outbound and need no public route. The interactive menu receives Telegram updates through n8n and therefore needs a stable public HTTPS webhook before its workflow can be activated.</p>
               <div class="system-grid">
@@ -3105,7 +3116,7 @@ internal static class HtmlPages
                 {{telegramMappingForm}}
               </div>
             </section>
-            <section class="setup-panel readiness-panel">
+            <section class="setup-panel readiness-panel" id="readiness-setup">
               <div class="setup-heading"><div><p class="eyebrow">STEP 04</p><h2>Activation readiness</h2></div><span class="check-state warning">Read only</span></div>
               <p class="section-intro">Select outbound Telegram delivery and interactive Telegram queries separately. The query option cannot pass while its public HTTPS webhook configuration is missing.</p>
               {{readinessForm}}

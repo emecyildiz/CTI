@@ -8,5 +8,6 @@
   <ItemGroup>
     <Compile Include="../../installer/windows/PackageUpdate.cs" Link="PackageUpdate.cs" />
     <Compile Include="../../installer/windows/RecentInstallations.cs" Link="RecentInstallations.cs" />
+    <Compile Include="../../installer/windows/SetupNavigation.cs" Link="SetupNavigation.cs" />
   </ItemGroup>
 </Project>

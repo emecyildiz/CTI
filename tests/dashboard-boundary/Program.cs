@@ -1,6 +1,16 @@
 using Microsoft.AspNetCore.Http;
 using System.Text.Json.Nodes;
 
+if (SetupGuide.Next(false, true, true, 6).Target != "#n8n-check" ||
+    SetupGuide.Next(true, false, true, 6).Target != "#ai-setup" ||
+    !SetupGuide.Next(true, true, false, 6).Title.Contains("adapter") ||
+    SetupGuide.Next(true, true, true, 0).Target != "#source-setup" ||
+    SetupGuide.Next(true, true, true, -1).Target != "#source-setup" ||
+    SetupGuide.Next(true, true, true, 6).Target != "#database-setup" ||
+    !SetupGuide.Next(true, true, true, 6).Detail.Contains("still need verification"))
+    throw new Exception("Setup guide navigation must not imply completed credential checks.");
+Console.WriteLine("PASS: 7 setup guide decisions and incomplete-state wording checks.");
+
 var allowed = new[]
 {
     "localhost", "LOCALHOST", "localhost:8080", "localhost:18080",
@@ -36,6 +46,31 @@ if (LocalRequestBoundary.IsAllowedHost(reboundRequest.Host))
     throw new InvalidOperationException("DNS-rebound Host was accepted.");
 
 Console.WriteLine($"PASS: {allowed.Length + rejected.Length + 1} local dashboard Host boundary checks.");
+
+foreach (var path in new[] { "/setup", "/setup/sources", "/setup/ai-profile" })
+    if (SetupRequestBoundary.ReferrerPolicy(path) != "same-origin")
+        throw new Exception("Setup forms must preserve a non-null Origin.");
+foreach (var path in new[] { "/", "/setup-other", "/health/ready" })
+    if (SetupRequestBoundary.ReferrerPolicy(path) != "no-referrer")
+        throw new Exception("Non-setup referrer policy unexpectedly changed.");
+var setupRequest = new DefaultHttpContext().Request;
+setupRequest.Host = new HostString("127.0.0.1", 8085);
+setupRequest.Headers.Origin = "http://127.0.0.1:8085";
+if (!SetupRequestBoundary.IsSameOrigin(setupRequest)) throw new Exception("Valid setup Origin rejected.");
+foreach (var origin in new[] { "", "null", "http://attacker.example:8085", "http://127.0.0.1:8086", "file://127.0.0.1:8085" })
+{
+    setupRequest.Headers.Origin = origin;
+    if (SetupRequestBoundary.IsSameOrigin(setupRequest)) throw new Exception("Invalid setup Origin accepted.");
+}
+setupRequest.Headers.Origin = new Microsoft.Extensions.Primitives.StringValues(new[] { "http://127.0.0.1:8085", "http://attacker.example" });
+if (SetupRequestBoundary.IsSameOrigin(setupRequest)) throw new Exception("Multiple Origins accepted.");
+Console.WriteLine("PASS: 13 setup referrer/Origin checks.");
+var setupRejection = (Microsoft.AspNetCore.Http.HttpResults.ContentHttpResult)SetupRequestBoundary.Rejected();
+if (setupRejection.StatusCode != 403 || setupRejection.ContentType != "text/html; charset=utf-8" ||
+    setupRejection.ResponseContent is null || !setupRejection.ResponseContent.Contains("href=\"/setup\"") ||
+    !setupRejection.ResponseContent.Contains("setup_request_rejected"))
+    throw new Exception("Setup rejection must remain 403 with safe recovery guidance.");
+Console.WriteLine("PASS: setup rejection status/content/recovery contract.");
 
 var validUrls = new[] { "https://hooks.example.com/", "https://Hooks.Example.com:8443/n8n/v1/", "https://hooks.example.com/a%20b/" };
 var invalidUrls = new[] { "https://10.0.0.5/", "https://192.168.1.20/", "https://[::]/", "https://[::1]/", "https://127.0.0.1/",

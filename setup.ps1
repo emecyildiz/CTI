@@ -299,6 +299,7 @@ if ($managedN8n) {
 
 Write-Host "`nCTI Self-Hosted is running." -ForegroundColor Green
 Write-Host "Dashboard: http://127.0.0.1:${dashboardPort}"
+Write-Host "Setup:     http://127.0.0.1:${dashboardPort}/setup"
 if ($managedN8n) {
     Write-Host "n8n:       http://127.0.0.1:${n8nPort}"
     Write-Host "`nCreate the first local n8n owner account, then use the protected dashboard setup page to map CTI credentials. Imported workflows remain disabled until you activate them."

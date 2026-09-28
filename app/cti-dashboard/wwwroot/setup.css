@@ -2,6 +2,19 @@
   margin-bottom: 1.5rem;
 }
 
+.setup-quick-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1.1rem;
+  margin-top: 1rem;
+}
+.setup-quick-links a, .setup-next-link { color: var(--accent); }
+.setup-quick-links a:focus-visible, .setup-next-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.setup-panel[id], #n8n-check { scroll-margin-top: 1.5rem; }
+
 .setup-notice {
   display: flex;
   gap: 0.75rem 1.25rem;

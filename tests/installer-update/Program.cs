@@ -23,6 +23,18 @@ string Package(string name, string version, string content)
 }
 try
 {
+    Check(SetupNavigation.PrimaryLabel(true) == "Continue setup", "fresh install guides to setup");
+    Check(SetupNavigation.PrimaryLabel(false) == "Open dashboard", "repair/update keeps dashboard action");
+    foreach (var port in new[] { 1, 8085, 65535 })
+    {
+        Check(SetupNavigation.Url(port, true) == $"http://127.0.0.1:{port}/setup", "setup URL uses selected port");
+        Check(SetupNavigation.Url(port, false) == $"http://127.0.0.1:{port}", "dashboard URL stays loopback");
+    }
+    foreach (var port in new[] { 0, -1, 65536 })
+    {
+        try { SetupNavigation.Url(port, true); throw new Exception("Invalid port accepted"); }
+        catch (ArgumentOutOfRangeException) { Check(true, "navigation rejects invalid port"); }
+    }
     Check(PackageUpdate.CompareVersions("0.1.0-rc.10", "0.1.0-rc.9") > 0, "numeric RC ordering");
     Check(PackageUpdate.CompareVersions("0.1.0", "0.1.0-rc.99") > 0, "stable follows prerelease");
     Check(PackageUpdate.CompareVersions("0.2.0-rc.1", "0.1.9") > 0, "core version ordering");
