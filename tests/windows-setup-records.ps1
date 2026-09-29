@@ -78,6 +78,18 @@ try {
     $token=[regex]::Match($html,'name="_csrf" value="([^"]+)"').Groups[1].Value
     Check ($token.Length -eq 43) 'CSRF form and session established'
     $page.Dispose()
+    foreach ($step in @('connection','ai','sources','telegram','review')) {
+        $wizard=$client.GetAsync("$base/setup?step=$step").GetAwaiter().GetResult()
+        $body=$wizard.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        Check ($wizard.IsSuccessStatusCode -and $body.Contains("href=`"/setup?step=$step`" aria-current=`"step`"")) "wizard navigation: $step"
+        $expected = @{connection='n8n-check';ai='ai-setup';sources='source-setup';telegram='telegram-setup';review='readiness-setup'}[$step]
+        Check ($body.Contains("id=`"$expected`" >")) "wizard active panel: $step"
+        foreach ($other in @('n8n-check','ai-setup','source-setup','telegram-setup','readiness-setup')) {
+            if ($other -ne $expected) { Check ($body.Contains("id=`"$other`" hidden>")) "wizard hidden panel: $other" }
+        }
+        Check (-not $body.Contains('<script')) 'wizard requires no client script or CSP relaxation'
+        $wizard.Dispose()
+    }
     function Post([string]$path, [string]$body, [string]$origin=$base) {
         $request=[Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Post,"$base$path")
         [void]$request.Headers.TryAddWithoutValidation('Origin',$origin)
@@ -88,6 +100,17 @@ try {
     $r=Post '/setup/ai-profile' $body
     Check ([int]$r.StatusCode -eq 302) 'AI profile saves without 403'; $r.Dispose()
     Check ((Sql 'SELECT model_identifier FROM cti.dashboard_ai_provider_status;') -eq 'acceptance-test-model') 'AI profile persisted in real PostgreSQL'
+    foreach ($endpoint in @('/setup/credential-handoff','/setup/postgres-credential-handoff')) {
+        $attempt="_csrf=$token&connect_workflows=true&n8n_api_key=synthetic-acceptance-key-only&ai_api_key=synthetic-provider-key-only&database_password=synthetic-database-password-only"
+        $r=Post $endpoint $attempt
+        $errorBody=$r.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        Check ([int]$r.StatusCode -eq 503 -and $errorBody.Contains('Return to setup')) 'combined setup shows recoverable failure page'
+        Check (-not $errorBody.Contains('synthetic-') -and $errorBody.Contains('No tasks were started')) 'failure page does not disclose submitted keys or claim completion'
+        $r.Dispose()
+        $r=Post $endpoint $attempt 'http://example.invalid'
+        Check ([int]$r.StatusCode -eq 403) 'combined setup preserves Origin boundary'
+        $r.Dispose()
+    }
     foreach ($origin in @('null','http://example.invalid')) {
         $r=Post '/setup/ai-profile' $body $origin
         Check ([int]$r.StatusCode -eq 403) "invalid Origin rejected: $origin"; $r.Dispose()

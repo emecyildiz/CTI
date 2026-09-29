@@ -107,6 +107,7 @@ app.MapGet("/setup", async (
     NpgsqlDataSource dataSource,
     N8nHandoffProbe n8nProbe,
     string? result,
+    string? step,
     CancellationToken cancellationToken) =>
 {
     await using var command = dataSource.CreateCommand("""
@@ -184,7 +185,7 @@ app.MapGet("/setup", async (
             telegramRuntime,
             csrfToken,
             result,
-            GetAuthenticatedIdentity(context)),
+            GetAuthenticatedIdentity(context), step),
         "text/html; charset=utf-8");
 });
 
@@ -383,6 +384,14 @@ app.MapPost("/setup/credential-handoff", async (
         return Results.BadRequest("Invalid API key format.");
     }
 
+    if (form["connect_workflows"] == "true")
+    {
+        var connected = await SetupSequence.Run(
+            () => n8nProbe.UpsertGoogleGeminiCredentialAsync(n8nApiKey, aiApiKey, cancellationToken),
+            value => value.Status is N8nCredentialHandoffStatus.Created or N8nCredentialHandoffStatus.Updated,
+            () => n8nProbe.MapGoogleGeminiWorkflowsAsync(n8nApiKey, cancellationToken));
+        return SetupConnectionResult(connected.First, connected.Second, "ai", "workflows_mapped", GetAuthenticatedIdentity(context));
+    }
     var handoff = await n8nProbe.UpsertGoogleGeminiCredentialAsync(
         n8nApiKey,
         aiApiKey,
@@ -517,6 +526,14 @@ app.MapPost("/setup/postgres-credential-handoff", async (
         return Results.BadRequest("Invalid credential input format.");
     }
 
+    if (form["connect_workflows"] == "true")
+    {
+        var connected = await SetupSequence.Run(
+            () => n8nProbe.UpsertPostgresCredentialAsync(n8nApiKey, databasePassword, cancellationToken),
+            value => value.Status is N8nCredentialHandoffStatus.Created or N8nCredentialHandoffStatus.Updated,
+            () => n8nProbe.MapPostgresWorkflowsAsync(n8nApiKey, cancellationToken));
+        return SetupConnectionResult(connected.First, connected.Second, "connection", "postgres_workflows_mapped", GetAuthenticatedIdentity(context));
+    }
     var handoff = await n8nProbe.UpsertPostgresCredentialAsync(
         n8nApiKey,
         databasePassword,
@@ -965,6 +982,28 @@ app.MapGet("/reports", async (
 });
 
 app.Run();
+
+static IResult SetupConnectionResult(N8nCredentialHandoffResult saved, N8nWorkflowMappingResult? mapped,
+    string step, string success, string identity)
+{
+    if (mapped?.Status is N8nWorkflowMappingStatus.Mapped or N8nWorkflowMappingStatus.AlreadyMapped)
+        return Results.Redirect($"/setup?result={success}");
+    var status = mapped is null ? saved.Status switch
+    {
+        N8nCredentialHandoffStatus.AuthenticationFailed => 401,
+        N8nCredentialHandoffStatus.Conflict => 409,
+        N8nCredentialHandoffStatus.Unavailable => 503,
+        _ => 502
+    } : mapped.Status switch
+    {
+        N8nWorkflowMappingStatus.AuthenticationFailed => 401,
+        N8nWorkflowMappingStatus.Missing or N8nWorkflowMappingStatus.Conflict => 409,
+        N8nWorkflowMappingStatus.Unavailable => 503,
+        _ => 502
+    };
+    return Results.Content(HtmlPages.SetupConnectionProblem(step, mapped is not null,
+        mapped?.Message ?? saved.Message, identity), "text/html; charset=utf-8", statusCode: status);
+}
 
 static TelegramRuntimeStatus ReadTelegramRuntimeStatus(IConfiguration configuration)
 {
@@ -2846,7 +2885,8 @@ internal static class HtmlPages
         TelegramRuntimeStatus telegramRuntime,
         string csrfToken,
         string? result,
-        string email)
+        string email,
+        string? requestedStep = null)
     {
         var sourceHealthClass = status.FailingSourceCount > 0 ? "warning" : "ready";
         var sourceHealthLabel = status.FailingSourceCount > 0
@@ -2938,10 +2978,12 @@ internal static class HtmlPages
         var credentialForm = credentialFormReady
             ? $$"""
                 <form class="credential-form" method="post" action="/setup/credential-handoff" autocomplete="off">
+                  <input type="hidden" name="connect_workflows" value="true">
                   <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
                   <label>n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
                   <label>Google Gemini API key<input type="password" name="ai_api_key" minlength="20" maxlength="512" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
-                  <div class="credential-guidance"><p>The setup key needs <code>credential:list</code>, <code>credential:create</code>, <code>credential:update</code>, <code>workflow:list</code>, <code>workflow:read</code>, and <code>workflow:update</code> scopes. The Gemini key is written directly to n8n's encrypted credential store.</p><button type="submit">Create or update credential</button></div>
+                  <div class="credential-guidance"><p>This saves the AI key securely in n8n and connects it to the included analysis tasks. It does not start tasks or test the AI provider by making a paid request.</p><button type="submit">Connect AI</button></div>
+                  <details class="setup-advanced"><summary>Required n8n key permissions</summary><p>credential:list, credential:create, credential:update, workflow:list, workflow:read, workflow:update.</p></details>
                 </form>
                 """
             : $"<div class=\"credential-unavailable\"><strong>Credential input is locked.</strong><p>{E(aiProvider.ProviderKey == "google_gemini" ? "Complete the n8n boundary check first." : "Save the bundled Google Gemini profile first.")}</p></div>";
@@ -2957,10 +2999,12 @@ internal static class HtmlPages
         var postgresCredentialForm = handoffReady
             ? $$"""
                 <form class="credential-form" method="post" action="/setup/postgres-credential-handoff" autocomplete="off">
+                  <input type="hidden" name="connect_workflows" value="true">
                   <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
                   <label>n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
                   <label>CTI application database password<input type="password" name="database_password" minlength="16" maxlength="512" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
-                  <div class="credential-guidance"><p>Use <code>CTI_APP_PASSWORD</code> from the private <code>.env</code> file. The credential is fixed to <code>cti_n8n@cti-db:5432</code> with SSL disabled inside the private Docker network.</p><button type="submit">Create or update PostgreSQL credential</button></div>
+                  <div class="credential-guidance"><p>Connects the database and the included tasks in one operation. Nothing starts collecting yet. This password was generated during installation; it is not your Windows or n8n account password.</p><button type="submit">Connect CTI data</button></div>
+                  <details class="setup-advanced"><summary>Where do I find the database password?</summary><p>In your CTI installation folder, open the private <code>.env</code> file and copy only the value after <code>CTI_APP_PASSWORD=</code>. Do not share the file or use POSTGRES_PASSWORD. This manual step is still required by this installer version.</p></details>
                 </form>
                 """
             : "<div class=\"credential-unavailable\"><strong>Database credential input is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
@@ -3004,24 +3048,29 @@ internal static class HtmlPages
                 """
             : "<div class=\"credential-unavailable\"><strong>Activation readiness audit is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
 
+        var currentStep = SetupGuide.SelectStep(requestedStep, result);
+        var stepIndex = Array.IndexOf(SetupGuide.Steps, currentStep);
+        string Hidden(string stepName) => currentStep == stepName ? "" : "hidden";
+        var navigation = string.Join("", SetupGuide.Steps.Select((name, index) =>
+            $"<a href=\"/setup?step={name}\" {(name == currentStep ? "aria-current=\"step\"" : "")}><span>{index + 1}</span>{E(SetupGuide.Titles[index])}</a>"));
+        var previousStep = stepIndex > 0 ? $"<a href=\"/setup?step={SetupGuide.Steps[stepIndex - 1]}\">← Back</a>" : "<span></span>";
+        var followingStep = stepIndex < SetupGuide.Steps.Length - 1 ? $"<a class=\"primary-link\" href=\"/setup?step={SetupGuide.Steps[stepIndex + 1]}\">{(currentStep == "telegram" ? "Continue / skip Telegram" : "Continue")} →</a>" : "";
         return Layout("Guided setup", email, $$"""
+            <div class="setup-wizard">
             <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
-            <aside class="setup-notice"><strong>One-time credential handoff</strong><span>API keys are accepted only by the protected handoff form, forwarded directly to n8n, and never stored in the CTI database.</span></aside>
+            <nav class="wizard-nav" aria-label="Setup steps">{{navigation}}</nav>
+            <p class="wizard-caption">Step {{stepIndex + 1}} of 5 · Save each form before continuing. Navigation does not save changes or mark a step complete.</p>
             {{savedNotice}}
-            <section class="setup-next setup-panel" aria-labelledby="setup-next-title">
-              <p class="eyebrow">START HERE</p>
+            <details class="setup-advanced">
+              <summary>What still needs attention?</summary>
               <h2 id="setup-next-title">{{E(nextStep.Title)}}</h2>
               <p>{{E(nextStep.Detail)}}</p>
-              <a class="setup-next-link" href="{{E(nextStep.Target)}}">Go to this step →</a>
-              <nav class="setup-quick-links" aria-label="Setup sections">
-                <a href="#n8n-check">n8n connection</a><a href="#ai-setup">AI provider &amp; key</a>
-                <a href="#source-setup">News sources</a><a href="#database-setup">Database access</a>
-                <a href="#telegram-setup">Telegram (optional)</a><a href="#readiness-setup">Final check</a>
-              </nav>
+              <a class="setup-next-link" href="/setup?step={{SetupGuide.StepForTarget(nextStep.Target)}}">Go to this step →</a>
               <p>Only observed state is shown below. Saved profiles are not proof that credentials work.
               No workflow is activated automatically.</p>
-            </section>
-            <ol class="setup-steps" aria-label="Setup progress">
+            </details>
+            <details class="setup-advanced"><summary>System status and saved configuration</summary>
+            <ol class="setup-steps" aria-label="Observed configuration">
               <li><span>01</span><strong>n8n connection</strong><small>{{(handoffReady ? "Connection boundary checked" : "Needs attention")}}</small></li>
               <li><span>02</span><strong>AI provider</strong><small>{{(aiProvider.ProfileDefined ? "Profile saved; key not verified here" : "Not configured")}}</small></li>
               <li><span>03</span><strong>News sources</strong><small>{{status.EnabledSourceCount}} selected; credentials need review</small></li>
@@ -3038,16 +3087,23 @@ internal static class HtmlPages
                 <article><span>CTI database writes</span><strong>Profile and source state only</strong><small>Credential material remains outside the PostgreSQL schema.</small></article>
               </div>
             </section>
-            <section class="setup-panel ai-panel" id="ai-setup">
+            </details>
+            <section class="setup-panel" id="n8n-check" {{Hidden("connection")}}>
+              <div class="setup-heading"><div><p class="eyebrow">STEP 01</p><h2>Connect the automation service</h2></div><span class="check-state {{(handoffReady ? "ready" : "warning")}}">{{(handoffReady ? "Reachable" : "Needs attention")}}</span></div>
+              <div class="section-intro"><p>n8n runs the news collection and analysis tasks. Open n8n from the installer and create its owner account if you have not done so.</p><p>In n8n, open Settings → n8n API to create an API key for the setup forms. Keep it private. CTI does not store this key between requests.</p><p>Next, connect the database below. This gives workflows access to CTI data; it does not start them.</p></div>
+              <details class="setup-advanced"><summary>Advanced connection diagnostics</summary><p>{{E(n8nStatus.Detail)}}</p><p>Internal API: {{E(n8nStatus.ApiBaseUrl)}}</p><p>This reachability check does not validate your API key or owner account.</p></details>
+            </section>
+            <section class="setup-panel ai-panel" id="ai-setup" {{Hidden("ai")}}>
               <div class="setup-heading"><div><p class="eyebrow">STEP 02</p><h2>AI provider profile</h2></div><span class="check-state {{(aiProvider.ProfileDefined ? "ready" : "warning")}}">{{(aiProvider.ProfileDefined ? "Profile defined" : "Not configured")}}</span></div>
-              <div class="ai-profile-grid">
+              <p class="section-intro">1. Choose a provider and save. 2. Enter the keys and select Connect AI. CTI will connect the key to its included tasks for you. Gemini is currently supported by guided setup; other providers require advanced configuration.</p>
+              <details class="setup-advanced"><summary>Saved profile details</summary><div class="ai-profile-grid">
                 <article><span>Provider</span><strong>{{E(providerLabel)}}</strong><small>Stable key: {{E(aiProvider.ProviderKey ?? "—")}}</small></article>
                 <article><span>Model</span><strong>{{E(modelLabel)}}</strong><small>Stored as provider-neutral metadata.</small></article>
                 <article><span>API endpoint</span><strong>{{E(endpointLabel)}}</strong><small>Optional for compatible or private endpoints.</small></article>
                 <article><span>Workflow adapter</span><strong>{{E(adapterLabel)}}</strong><small>Adapter key: {{E(aiProvider.AdapterKey ?? "—")}}</small></article>
                 <article><span>Credential boundary</span><strong>External credential store</strong><small>API keys are intentionally excluded from this schema.</small></article>
                 <article><span>Profile updated</span><strong>{{E(profileUpdated)}}</strong><small>No workflow is activated by defining a profile.</small></article>
-              </div>
+              </div></details>
               <form class="ai-form" method="post" action="/setup/ai-profile">
                 <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
                 <label>Provider<select name="provider_type" required>{{Options(ProviderOptions, selectedProvider)}}</select></label>
@@ -3055,30 +3111,30 @@ internal static class HtmlPages
                 <label>API base URL (optional)<input type="url" name="api_base_url" value="{{E(selectedEndpoint)}}" maxlength="500" placeholder="https://api.example.com/v1" autocomplete="off"></label>
                 <div class="form-actions"><p>Saving updates only the non-secret provider profile. It does not test the API or alter n8n.</p><button type="submit">Save AI profile</button></div>
               </form>
-              <div class="adapter-section">
+              <details class="setup-advanced"><summary>Advanced: provider compatibility</summary><div class="adapter-section">
                 <p class="eyebrow">ADAPTER TARGETS</p>
                 <div class="adapter-options">
                   <article><strong>Google Gemini</strong><span class="check-state ready">Bundled</span><p>The included article-analysis and weekly-report workflows currently use the Gemini node.</p></article>
                   <article><strong>OpenAI-compatible</strong><span class="check-state warning">Manual mapping</span><p>The profile can represent the provider and endpoint, but its n8n model node must be mapped before activation.</p></article>
                   <article><strong>Custom provider</strong><span class="check-state warning">Manual mapping</span><p>The validated prompt and JSON contract can be reused after a compatible workflow adapter is supplied.</p></article>
                 </div>
-              </div>
-              <div class="handoff-section" id="n8n-check">
+              </div></details>
+              <div class="handoff-section">
                 <div class="setup-heading"><div><p class="eyebrow">CREDENTIAL HANDOFF PREFLIGHT</p><h3>n8n boundary check</h3></div><span class="check-state {{(handoffReady ? "ready" : "warning")}}">{{(handoffReady ? "Compatible" : "Not ready")}}</span></div>
-                <div class="handoff-grid">
+                <details class="setup-advanced"><summary>Connection diagnostics</summary><div class="handoff-grid">
                   <article><span>Network reachability</span><strong>{{(n8nStatus.Reachable ? "Reachable" : "Unavailable")}}</strong><small>The probe sends no API key or credential data.</small></article>
                   <article><span>Health endpoint</span><strong>{{(n8nStatus.HealthReady ? "Ready" : "Not ready")}}</strong><small>Checked through the configured internal n8n URL.</small></article>
                   <article><span>Credential API</span><strong>{{(n8nStatus.CredentialApiDetected ? "Detected" : "Not detected")}}</strong><small>{{(n8nStatus.AuthenticationRequired ? "Unauthenticated access rejected." : "Authentication boundary not confirmed.")}}</small></article>
                   <article><span>Configured API URL</span><strong>{{E(n8nStatus.ApiBaseUrl)}}</strong><small>{{E(n8nStatus.Detail)}}</small></article>
-                </div>
+                </div></details>
                 {{credentialForm}}
               </div>
-              <div class="workflow-mapping-section">
+              <details class="setup-advanced"><summary>Advanced: reconnect an existing AI key</summary><div class="workflow-mapping-section">
                 <div class="setup-heading"><div><p class="eyebrow">WORKFLOW CREDENTIAL MAPPING</p><h3>Gemini workflow drafts</h3></div><span class="check-state warning">Manual confirmation</span></div>
                 {{workflowMappingForm}}
-              </div>
+              </div></details>
             </section>
-            <section class="setup-panel source-panel" id="source-setup">
+            <section class="setup-panel source-panel" id="source-setup" {{Hidden("sources")}}>
               <div class="setup-heading"><div><p class="eyebrow">STEP 03</p><h2>Reviewed sources</h2></div><span class="check-state ready">Allowlisted catalog</span></div>
               <p class="section-intro">Choose from the bundled and reviewed source definitions. Feed URLs, article hosts, selectors, and trust scores cannot be edited from this screen.</p>
               <form class="source-form" method="post" action="/setup/sources">
@@ -3087,20 +3143,21 @@ internal static class HtmlPages
                 <div class="form-actions"><p>Select at least one source. Changes take effect when the next Source Collection run loads its source list.</p><button type="submit">Save source selection</button></div>
               </form>
             </section>
-            <section class="setup-panel database-panel" id="database-setup">
-              <div class="setup-heading"><div><p class="eyebrow">STEP 03</p><h2>PostgreSQL workflow access</h2></div><span class="check-state warning">Manual confirmation</span></div>
-              <p class="section-intro">The generated application-role password is handed directly to n8n. The database owner and dashboard roles are never used by workflow nodes.</p>
+            <section class="setup-panel database-panel" id="database-setup" {{Hidden("connection")}}>
+              <div class="setup-heading"><div><p class="eyebrow">STEP 01 · DATABASE</p><h2>Connect CTI data</h2></div><span class="check-state warning">Verify in final check</span></div>
+              <p class="section-intro">This lets CTI save the news it collects. Enter the setup key and installation password below, then select Connect CTI data.</p>
               <div class="handoff-section database-handoff-section">
-                <div class="setup-heading"><div><p class="eyebrow">DATABASE CREDENTIAL HANDOFF</p><h3>Restricted CTI application role</h3></div></div>
+                <div class="setup-heading"><div><h3>Database connection</h3></div></div>
                 {{postgresCredentialForm}}
               </div>
-              <div class="workflow-mapping-section">
+              <details class="setup-advanced"><summary>Advanced: reconnect an existing database credential</summary><div class="workflow-mapping-section">
                 <div class="setup-heading"><div><p class="eyebrow">DATABASE WORKFLOW MAPPING</p><h3>Bundled workflow drafts</h3></div></div>
                 {{postgresMappingForm}}
-              </div>
+              </div></details>
             </section>
-            <section class="setup-panel telegram-panel" id="telegram-setup">
-              <div class="setup-heading"><div><p class="eyebrow">STEP 03 · OPTIONAL</p><h2>Private Telegram integration</h2></div><span class="check-state warning">Disabled by default</span></div>
+            <section class="setup-panel telegram-panel" id="telegram-setup" {{Hidden("telegram")}}>
+              <div class="setup-heading"><div><p class="eyebrow">STEP 04 · OPTIONAL</p><h2>Telegram notifications</h2></div><span class="check-state warning">Optional</span></div>
+              <p class="section-intro">You can skip this entire step and use the browser dashboard. Sending reports and alerts does not require a public domain. Receiving interactive bot commands requires a separately configured public HTTPS address.</p>
               <p class="section-intro">Reports and error alerts are outbound and need no public route. The interactive menu receives Telegram updates through n8n and therefore needs a stable public HTTPS webhook before its workflow can be activated.</p>
               <div class="system-grid">
                 <article><span>Reports and alerts</span><strong>Outbound only</strong><small>A bot token and private destination are sufficient.</small></article>
@@ -3116,13 +3173,27 @@ internal static class HtmlPages
                 {{telegramMappingForm}}
               </div>
             </section>
-            <section class="setup-panel readiness-panel" id="readiness-setup">
-              <div class="setup-heading"><div><p class="eyebrow">STEP 04</p><h2>Activation readiness</h2></div><span class="check-state warning">Read only</span></div>
+            <section class="setup-panel readiness-panel" id="readiness-setup" {{Hidden("review")}}>
+              <div class="setup-heading"><div><p class="eyebrow">STEP 05</p><h2>Check before starting</h2></div><span class="check-state warning">Read only</span></div>
+              <p class="section-intro">Run the check below. It will list missing configuration or show the next activation instructions. Nothing starts automatically, and opening this step does not mean setup is complete.</p>
               <p class="section-intro">Select outbound Telegram delivery and interactive Telegram queries separately. The query option cannot pass while its public HTTPS webhook configuration is missing.</p>
               {{readinessForm}}
             </section>
+            <nav class="wizard-actions" aria-label="Continue setup">{{previousStep}}{{followingStep}}</nav>
+            <p class="wizard-caption">Keys are sent only when you submit a credential form. They are forwarded to n8n and are not saved in the CTI database.</p>
+            </div>
             """);
     }
+
+    internal static string SetupConnectionProblem(string step, bool saved, string detail, string email) =>
+        Layout("Connection needs attention", email, $$"""
+            <section class="hero setup-hero"><p class="eyebrow">SETUP NOT COMPLETE</p><h1>Let's finish the connection</h1></section>
+            <section class="setup-panel"><div class="setup-heading"><h2>{{(saved ? "Key saved; tasks still need connecting" : "Connection could not be confirmed")}}</h2></div>
+            <div class="section-intro"><p>{{(saved ? "Your credential was saved in n8n, but connecting it to the included tasks did not finish. No tasks were started. You can retry; do not delete your installation." : "The service did not confirm a completed connection. Check that n8n is running and that your API key has the required permissions, then retry. No tasks were started.")}}</p>
+            <p>If n8n reports that tasks are missing or modified, use the installer to check the bundled tasks. Existing active or customized tasks will not be overwritten by this setup operation.</p>
+            <details class="setup-advanced"><summary>Technical details for support</summary><p>{{E(detail)}}</p></details>
+            <p><a class="primary-link" href="/setup?step={{E(step)}}">Return to setup →</a></p></div></section>
+            """);
 
     internal static string SetupReadiness(N8nReadinessResult result, string email)
     {

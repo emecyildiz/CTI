@@ -1,6 +1,37 @@
 using Microsoft.AspNetCore.Http;
 using System.Text.Json.Nodes;
 
+var stages = new List<string>();
+var sequence = await SetupSequence.Run(
+    () => { stages.Add("save"); return Task.FromResult(true); },
+    saved => saved,
+    () => { stages.Add("connect"); return Task.FromResult("connected"); });
+if (string.Join(",", stages) != "save,connect" || sequence.Second != "connected")
+    throw new Exception("Setup connection order invalid.");
+stages.Clear();
+var rejectedSequence = await SetupSequence.Run(
+    () => Task.FromResult(false), saved => saved,
+    () => { stages.Add("unexpected"); return Task.FromResult("connected"); });
+if (rejectedSequence.Second is not null || stages.Count != 0)
+    throw new Exception("Failed credential save must stop mapping.");
+var partialSequence = await SetupSequence.Run(() => Task.FromResult(true), saved => saved,
+    () => Task.FromResult("mapping failed"));
+if (!partialSequence.First || partialSequence.Second != "mapping failed")
+    throw new Exception("Partial setup result lost.");
+Console.WriteLine("PASS: setup connection sequence, failure stop and partial outcome.");
+
+foreach (var step in SetupGuide.Steps)
+    if (SetupGuide.SelectStep(step, "saved") != step) throw new Exception("Explicit wizard step lost.");
+foreach (var invalid in new string?[] { null, "", "<script>", "../ai", "AI", "6" })
+    if (SetupGuide.SelectStep(invalid, null) != "connection") throw new Exception("Invalid wizard step accepted.");
+if (SetupGuide.SelectStep(null, "saved") != "ai" ||
+    SetupGuide.SelectStep(null, "sources_saved") != "sources" ||
+    SetupGuide.SelectStep(null, "telegram_workflows_mapped") != "telegram" ||
+    SetupGuide.SelectStep(null, "postgres_credential_created") != "connection" ||
+    SetupGuide.StepForTarget("#readiness-setup") != "review")
+    throw new Exception("Wizard post-save navigation incorrect.");
+Console.WriteLine("PASS: wizard step allowlist and post-save navigation.");
+
 if (SetupGuide.Next(false, true, true, 6).Target != "#n8n-check" ||
     SetupGuide.Next(true, false, true, 6).Target != "#ai-setup" ||
     !SetupGuide.Next(true, true, false, 6).Title.Contains("adapter") ||

@@ -1,5 +1,30 @@
 internal static class SetupGuide
 {
+    internal static readonly string[] Steps = ["connection", "ai", "sources", "telegram", "review"];
+    internal static readonly string[] Titles = ["Connection", "AI", "News sources", "Telegram (optional)", "Review & start"];
+
+    // Navigation only. A selected step is never evidence of completed setup.
+    internal static string SelectStep(string? requested, string? result)
+    {
+        if (requested is not null && Steps.Contains(requested)) return requested;
+        return result switch
+        {
+            "saved" or "credential_created" or "credential_updated" or "workflows_mapped" or "workflows_already_mapped" => "ai",
+            "sources_saved" => "sources",
+            "telegram_credential_created" or "telegram_credential_updated" or "telegram_workflows_mapped" or "telegram_workflows_already_mapped" => "telegram",
+            _ => "connection"
+        };
+    }
+
+    internal static string StepForTarget(string target) => target switch
+    {
+        "#ai-setup" => "ai",
+        "#source-setup" => "sources",
+        "#telegram-setup" => "telegram",
+        "#readiness-setup" => "review",
+        _ => "connection"
+    };
+
     internal sealed record NextStep(string Target, string Title, string Detail);
 
     // A navigation hint, never a persisted completion/activation decision.

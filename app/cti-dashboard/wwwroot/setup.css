@@ -1,3 +1,21 @@
+.setup-wizard { max-width: 1000px; margin: 0 auto; }
+.setup-wizard [hidden] { display: none !important; }
+.wizard-nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; }
+.wizard-nav a { display: flex; align-items: center; gap: .65rem; padding: 1rem; border: 1px solid var(--line); color: var(--muted); text-decoration: none; overflow-wrap: anywhere; }
+.wizard-nav a[aria-current="step"] { color: var(--text); border-color: var(--accent); background: var(--panel); }
+.wizard-nav span { color: var(--accent); font: 14px ui-monospace, monospace; }
+.wizard-caption { color: var(--muted); line-height: 1.6; margin: 1rem 0; }
+.setup-advanced { border: 1px solid var(--line); padding: 1rem; margin: .8rem 0; }
+.setup-advanced summary { cursor: pointer; color: var(--accent); padding: .25rem; }
+.setup-advanced p { line-height: 1.65; }
+.wizard-actions { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-top: 1.5rem; padding: 1rem 0; }
+.wizard-actions a { color: var(--accent); padding: .75rem 1rem; border: 1px solid var(--line); }
+.setup-wizard .setup-heading { flex-wrap: wrap; }
+.setup-wizard .setup-heading h2 { line-height: 1.25; }
+.setup-wizard .section-intro { line-height: 1.65; }
+.setup-wizard a:focus-visible, .setup-wizard summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 700px) { .wizard-nav { grid-template-columns: 1fr 1fr; } .wizard-nav a { padding: .8rem; } }
+
 .setup-hero {
   margin-bottom: 1.5rem;
 }

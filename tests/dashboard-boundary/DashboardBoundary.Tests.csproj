@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../app/cti-dashboard/SetupSequence.cs" Link="SetupSequence.cs" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <Compile Include="../../app/cti-dashboard/LocalRequestBoundary.cs" Link="LocalRequestBoundary.cs" />
     <Compile Include="../../app/cti-dashboard/SetupRequestBoundary.cs" Link="SetupRequestBoundary.cs" />
