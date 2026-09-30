@@ -45,6 +45,9 @@ internal sealed class InstallerForm : Form
     private readonly ComboBox managementAction = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210 };
     private readonly Button manageButton = new() { Text = "Manage installation", AutoSize = true };
     private readonly Label installationStatus = new() { AutoSize = true, MaximumSize = new Size(730, 0) };
+    private readonly Label setupSummary = new() { AutoSize = true, MaximumSize = new Size(730, 0), Margin = new Padding(0, 4, 0, 12) };
+    private readonly Label activity = new() { AutoSize = true, MaximumSize = new Size(730, 0), Margin = new Padding(0, 12, 0, 12) };
+    private readonly CheckBox showDetails = new() { Text = "Show technical details", AutoSize = true };
     private readonly ComboBox recentInstallations = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private bool dockerReady;
     private bool operationRunning;
@@ -55,8 +58,8 @@ internal sealed class InstallerForm : Form
     {
         Text = "CTI Self-Hosted Setup";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(800, 800);
-        Size = new Size(900, 860);
+        MinimumSize = new Size(760, 600);
+        Size = new Size(900, 780);
         BackColor = Color.FromArgb(246, 247, 249);
         Font = new Font("Segoe UI", 9.5f);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -66,8 +69,10 @@ internal sealed class InstallerForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(24),
             ColumnCount = 1,
-            RowCount = 6,
+            RowCount = 7,
+            AutoScroll = true,
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -90,16 +95,29 @@ internal sealed class InstallerForm : Form
         {
             AutoSize = true,
             MaximumSize = new Size(790, 0),
-            Text = "Installs the private dashboard, PostgreSQL database, and optionally a managed n8n instance. Workflows are imported disabled and are never activated automatically.",
+            Text = "Your private news and threat-intelligence workspace. Install here, then finish configuration in your browser. Nothing starts collecting or sending messages without your approval.",
             ForeColor = Color.FromArgb(82, 89, 99),
             Margin = new Padding(0, 0, 0, 18),
         };
         root.Controls.Add(intro);
 
-        root.Controls.Add(BuildLocationPanel());
-        root.Controls.Add(BuildOptionsPanel());
+        root.Controls.Add(setupSummary);
+        var advancedToggle = new CheckBox { Text = "Advanced settings — folder, ports and existing n8n", AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
+        var advanced = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Top, ColumnCount = 1, Visible = false };
+        advanced.Controls.Add(BuildLocationPanel());
+        advanced.Controls.Add(BuildOptionsPanel());
+        advancedToggle.CheckedChanged += (_, _) => advanced.Visible = advancedToggle.Checked;
+        root.Controls.Add(advancedToggle);
+        root.Controls.Add(advanced);
         root.Controls.Add(BuildStatusPanel());
         root.Controls.Add(BuildActionPanel());
+        managedN8n.CheckedChanged += (_, _) => RefreshInstallAction();
+        Resize += (_, _) =>
+        {
+            var width = Math.Max(320, ClientSize.Width - 90);
+            foreach (var label in new[] { intro, setupSummary, activity, installationStatus, requirementStatus })
+                label.MaximumSize = new Size(width, 0);
+        };
 
         Shown += async (_, _) => { LoadSavedOptions(); await CheckRequirementsAsync(); };
         installPath.Leave += (_, _) => LoadSavedOptions();
@@ -155,7 +173,7 @@ internal sealed class InstallerForm : Form
     {
         var panel = new GroupBox
         {
-            Text = "n8n option",
+            Text = "Automation service and network (advanced)",
             Dock = DockStyle.Top,
             AutoSize = true,
             Padding = new Padding(12),
@@ -168,7 +186,7 @@ internal sealed class InstallerForm : Form
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
         };
-        managedN8n.Text = "Install and manage a local n8n container (recommended)";
+        managedN8n.Text = "Set up the automation service for me (recommended)";
         managedN8n.AutoSize = true;
         managedN8n.Checked = true;
         existingN8n.Text = "Use an existing n8n instance (manual workflow import)";
@@ -193,9 +211,11 @@ internal sealed class InstallerForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3,
+            RowCount = 5,
             Margin = new Padding(0, 0, 0, 12),
         };
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -243,7 +263,13 @@ internal sealed class InstallerForm : Form
         log.Font = new Font("Cascadia Mono", 9f);
         log.WordWrap = false;
         log.Text = "Ready.\n";
-        panel.Controls.Add(log, 0, 2);
+        activity.Text = "1. Check this computer\n2. Install CTI with the recommended settings\n3. Continue setup in your browser";
+        panel.Controls.Add(activity, 0, 2);
+        panel.Controls.Add(showDetails, 0, 3);
+        log.Visible = false;
+        log.MinimumSize = new Size(0, 120);
+        showDetails.CheckedChanged += (_, _) => log.Visible = showDetails.Checked;
+        panel.Controls.Add(log, 0, 4);
         return panel;
     }
 
@@ -259,6 +285,9 @@ internal sealed class InstallerForm : Form
         installButton.Text = "Install CTI";
         installButton.AutoSize = true;
         installButton.Padding = new Padding(12, 5, 12, 5);
+        installButton.BackColor = Color.FromArgb(35, 81, 138);
+        installButton.ForeColor = Color.White;
+        installButton.FlatStyle = FlatStyle.Flat;
         installButton.Enabled = false;
         installButton.Click += async (_, _) => await InstallAsync();
         openDashboardButton.Text = "Open dashboard";
@@ -332,6 +361,10 @@ internal sealed class InstallerForm : Form
                 : $"Installed/attempted: {installed} — package: {InstallerVersion} — {action}. Existing n8n workflows are preserved.";
             installationStatus.ForeColor = Color.FromArgb(82, 89, 99);
             var hasConfig = File.Exists(Path.Combine(destination, ".env"));
+            setupSummary.Text = installed is null
+                ? (managedN8n.Checked ? "Recommended: CTI manages its automation service for you." : "Advanced: you will connect and configure your existing n8n service.") + $"\nInstallation folder: {destination}"
+                : $"Existing CTI installation ({installed})\nFolder: {destination}\nYour saved settings and data will be preserved.";
+            manageButton.Visible = managementAction.Visible = File.Exists(Path.Combine(destination, ".cti-owner.json"));
             managedN8n.Enabled = existingN8n.Enabled = !hasConfig;
             installButton.Enabled = dockerReady && HasEmbeddedPayload();
         }
@@ -356,6 +389,7 @@ internal sealed class InstallerForm : Form
             using var owner = JsonDocument.Parse(File.ReadAllText(ownerPath));
             var project = owner.RootElement.GetProperty("project").GetString() ?? "";
             var action = new[] { "Stop", "Remove", "Purge" }[managementAction.SelectedIndex];
+            showDetails.Checked = true;
             SetBusy(true);
             SetInputsEnabled(false);
             Directory.CreateDirectory(temporary);
@@ -443,6 +477,7 @@ internal sealed class InstallerForm : Form
         openSetupButton.Enabled = false;
         openN8nButton.Enabled = false;
         AppendLog($"Installing into {destination}");
+        activity.Text = "Preparing installation files. Keep this window open.";
 
         var temporaryDirectory = Path.Combine(Path.GetTempPath(), $"cti-installer-{Guid.NewGuid():N}");
         try
@@ -475,6 +510,7 @@ internal sealed class InstallerForm : Form
             }
 
             AppendLog("Starting the CTI setup script…");
+            activity.Text = "Starting CTI services and preparing connections. The first installation may take several minutes.";
             var result = await RunProcessAsync(powershell, arguments, destination, true, TimeSpan.FromMinutes(20));
             if (result.ExitCode != 0) throw new InvalidOperationException($"Setup stopped with exit code {result.ExitCode}.");
 
@@ -488,6 +524,7 @@ internal sealed class InstallerForm : Form
             n8nUrl = $"http://127.0.0.1:{n8nPort.Value}";
             SetRequirement("CTI Self-Hosted was installed successfully.", Color.FromArgb(24, 128, 56));
             AppendLog("Installation completed successfully.");
+            activity.Text = "Services installed. Next: open setup to choose your sources and configure optional AI and Telegram features. Collection is not active yet.";
             openDashboardButton.Enabled = true;
             openSetupButton.Enabled = true;
             openN8nButton.Enabled = managedN8n.Checked;
@@ -498,6 +535,8 @@ internal sealed class InstallerForm : Form
         catch (Exception exception)
         {
             SetRequirement("Installation did not complete.", Color.FromArgb(190, 45, 45));
+            activity.Text = "Setup needs attention. Review the details below before retrying; do not delete your installation folder.";
+            showDetails.Checked = true;
             AppendLog($"ERROR: {exception.Message}");
             MessageBox.Show(this, $"Installation did not complete.\n\n{exception.Message}\n\nReview the log in this window before retrying.", "CTI Setup", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
