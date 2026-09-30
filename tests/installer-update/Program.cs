@@ -23,6 +23,14 @@ string Package(string name, string version, string content)
 }
 try
 {
+    Check(RequirementGuidance.Failure(RequirementStage.Command).Contains("reopen"), "new Docker install explains installer restart");
+    Check(RequirementGuidance.Failure(RequirementStage.Compose).Contains("repair"), "missing Compose offers repair guidance");
+    Check(RequirementGuidance.Failure(RequirementStage.Engine).Contains("cannot reach"), "engine failure does not claim Docker is missing");
+    Check(RequirementGuidance.Failure(RequirementStage.Engine).Contains("virtualization"), "engine guidance includes VM prerequisite failures");
+    Check(RequirementGuidance.NextStep(true).Contains("local n8n account"), "managed setup explains account step");
+    Check(RequirementGuidance.NextStep(false).Contains("External n8n was not changed"), "external setup does not promise local n8n account");
+    Check(new[] { true, false }.All(managed => RequirementGuidance.NextStep(managed).Contains("does not activate")), "installation never implies collection activated");
+    Check(RequirementGuidance.NextStep(true).Contains("keep their current state"), "repair does not claim existing tasks are stopped");
     var testSecret = new string('x', 43);
     var managedConfig = "CTI_MANAGED_N8N=true\nCTI_DASHBOARD_BIND=127.0.0.1\nCTI_DASHBOARD_PORT=8085\nCTI_N8N_API_URL=http://cti-n8n:5678/api/v1\nCTI_APP_PASSWORD=" + testSecret;
     var connection = ManagedConnectionSettings.Parse(managedConfig);

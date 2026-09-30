@@ -121,7 +121,9 @@ internal sealed class InstallerForm : Form
 
         Shown += async (_, _) => { LoadSavedOptions(); await CheckRequirementsAsync(); };
         installPath.Leave += (_, _) => LoadSavedOptions();
-        installPath.TextChanged += (_, _) => RefreshInstallAction();
+        installPath.TextChanged += (_, _) => { InvalidateOpenActions(); RefreshInstallAction(); };
+        dashboardPort.ValueChanged += (_, _) => InvalidateOpenActions();
+        n8nPort.ValueChanged += (_, _) => InvalidateOpenActions();
         FormClosing += (_, e) =>
         {
             if (!operationRunning) return;
@@ -422,30 +424,37 @@ internal sealed class InstallerForm : Form
         installButton.Enabled = false;
         SetRequirement("Checking Docker CLI…", Color.FromArgb(82, 89, 99));
         AppendLog("Checking Docker prerequisites…");
+        var stage = RequirementStage.Command;
+        activity.Text = "Checking whether Docker and its required components are available. No installation changes are being made.";
         try
         {
             var version = await RunProcessAsync("docker", ["--version"], null, false, TimeSpan.FromSeconds(15));
             if (version.ExitCode != 0) throw new InvalidOperationException("Docker CLI was not found.");
 
+            stage = RequirementStage.Compose;
             var compose = await RunProcessAsync("docker", ["compose", "version"], null, false, TimeSpan.FromSeconds(15));
             if (compose.ExitCode != 0) throw new InvalidOperationException("Docker Compose v2 is unavailable.");
 
+            stage = RequirementStage.Engine;
             var engine = await RunProcessAsync("docker", ["info", "--format", "{{.ServerVersion}}"], null, false, TimeSpan.FromSeconds(20));
-            if (engine.ExitCode != 0) throw new InvalidOperationException("Docker Desktop is installed, but its engine is not running.");
+            if (engine.ExitCode != 0) throw new InvalidOperationException("Docker engine could not be reached.");
 
             SetRequirement($"Docker is ready (engine {engine.Output.Trim()}).", Color.FromArgb(24, 128, 56));
             dockerReady = true;
+            activity.Text = "This computer is ready. Review the installation folder above, then choose the main CTI installation button. Advanced settings are optional.";
             AppendLog("Docker Desktop and Compose are ready.");
             installButton.Enabled = HasEmbeddedPayload();
             if (!installButton.Enabled)
             {
                 SetRequirement("This development build does not contain the installation payload.", Color.FromArgb(176, 80, 0));
+                activity.Text = "Docker is ready, but this preview cannot install CTI. Use the complete installer from the project's GitHub Releases page.";
                 AppendLog("The embedded release payload is missing. Use an installer downloaded from GitHub Releases.");
             }
         }
         catch (Exception exception)
         {
-            SetRequirement(exception.Message, Color.FromArgb(190, 45, 45));
+            SetRequirement("System check needs attention", Color.FromArgb(190, 45, 45));
+            activity.Text = RequirementGuidance.Failure(stage);
             AppendLog($"Requirement check failed: {exception.Message}");
         }
         finally
@@ -524,7 +533,7 @@ internal sealed class InstallerForm : Form
             n8nUrl = $"http://127.0.0.1:{n8nPort.Value}";
             SetRequirement("CTI Self-Hosted was installed successfully.", Color.FromArgb(24, 128, 56));
             AppendLog("Installation completed successfully.");
-            activity.Text = "Services installed. Next: open setup to choose your sources and configure optional AI and Telegram features. Collection is not active yet.";
+            activity.Text = RequirementGuidance.NextStep(managedN8n.Checked);
             openDashboardButton.Enabled = true;
             openSetupButton.Enabled = true;
             openN8nButton.Enabled = managedN8n.Checked;
@@ -738,6 +747,14 @@ internal sealed class InstallerForm : Form
         manageButton.Enabled = !busy;
         managementAction.Enabled = !busy;
         if (busy) installButton.Enabled = false;
+    }
+
+    private void InvalidateOpenActions()
+    {
+        // URLs are confirmed after setup, not inferred from an edited folder/port.
+        openDashboardButton.Enabled = false;
+        openSetupButton.Enabled = false;
+        openN8nButton.Enabled = false;
     }
 
     private void SetInputsEnabled(bool enabled)

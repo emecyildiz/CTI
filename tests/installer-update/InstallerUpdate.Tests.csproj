@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../installer/windows/RequirementGuidance.cs" Link="RequirementGuidance.cs" />
     <Compile Include="../../installer/windows/ManagedConnectionSettings.cs" Link="ManagedConnectionSettings.cs" />
     <Compile Include="../../installer/windows/PackageUpdate.cs" Link="PackageUpdate.cs" />
     <Compile Include="../../installer/windows/RecentInstallations.cs" Link="RecentInstallations.cs" />
