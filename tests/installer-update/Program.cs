@@ -23,6 +23,26 @@ string Package(string name, string version, string content)
 }
 try
 {
+    var testSecret = new string('x', 43);
+    var managedConfig = "CTI_MANAGED_N8N=true\nCTI_DASHBOARD_BIND=127.0.0.1\nCTI_DASHBOARD_PORT=8085\nCTI_N8N_API_URL=http://cti-n8n:5678/api/v1\nCTI_APP_PASSWORD=" + testSecret;
+    var connection = ManagedConnectionSettings.Parse(managedConfig);
+    Check(connection.Dashboard.AbsoluteUri == "http://127.0.0.1:8085/" && connection.ApplicationPassword == testSecret,
+        "managed connection selects loopback and application secret");
+    Check(!connection.ToString().Contains(testSecret), "connection display hides secret");
+    foreach (var unsafeConfig in new[] {
+        managedConfig.Replace("CTI_MANAGED_N8N=true", "CTI_MANAGED_N8N=false"),
+        managedConfig.Replace("127.0.0.1", "0.0.0.0"),
+        managedConfig.Replace("http://cti-n8n:5678/api/v1", "https://example.invalid/api/v1"),
+        managedConfig.Replace("PORT=8085", "PORT=65536"),
+        managedConfig.Replace("PORT=8085", "PORT=-1"),
+        managedConfig + "\nCTI_DASHBOARD_PORT=9000",
+        managedConfig.Replace(testSecret, "${OTHER_PASSWORD}"),
+        managedConfig.Replace(testSecret, "\"" + testSecret + "\""),
+        managedConfig.Replace("CTI_APP_PASSWORD", "POSTGRES_PASSWORD"),
+        managedConfig + '\0', new string('x', 65537) })
+        Deny(() => ManagedConnectionSettings.Parse(unsafeConfig), "unsafe managed connection settings rejected");
+    try { ManagedConnectionSettings.Parse(managedConfig + "\nCTI_APP_PASSWORD=" + testSecret); }
+    catch (InvalidDataException error) { Check(!error.Message.Contains(testSecret), "configuration errors hide secrets"); }
     Check(SetupNavigation.PrimaryLabel(true) == "Continue setup", "fresh install guides to setup");
     Check(SetupNavigation.PrimaryLabel(false) == "Open dashboard", "repair/update keeps dashboard action");
     foreach (var port in new[] { 1, 8085, 65535 })

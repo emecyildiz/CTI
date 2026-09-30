@@ -283,8 +283,16 @@ if ($managedN8n) {
     if (-not $n8nReady) { Stop-Setup 'The managed n8n service did not become ready in time.' }
 
     if (-not $SkipWorkflowImport) {
+        & docker exec $n8nContainer sh -c 'test -f /home/node/.n8n/.cti-managed-bootstrap-pending-v1' 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Stop-Setup 'A previous automatic connection was interrupted. Existing data is preserved; automatic re-import is blocked. Keep this installation for diagnosis.'
+        }
         & docker exec $n8nContainer sh -c 'test -f /home/node/.n8n/.cti-workflows-imported-v1' 2>$null
-        if ($LASTEXITCODE -ne 0) {
+        if ($LASTEXITCODE -ne 0 -and $createdEnvironment) {
+            Write-Step 'Preparing the private CTI data connection automatically'
+            . (Join-Path $PSScriptRoot 'scripts/managed-bootstrap.ps1')
+            Invoke-CtiFreshManagedBootstrap $PSScriptRoot $environmentValues
+        } elseif ($LASTEXITCODE -ne 0) {
             Write-Step 'Importing the CTI workflows in disabled state'
             & docker exec $n8nContainer rm -rf /tmp/cti-self-hosted-workflows 2>$null
             Invoke-Docker @('exec', $n8nContainer, 'mkdir', '-p', '/tmp/cti-self-hosted-workflows')
@@ -302,7 +310,7 @@ Write-Host "Dashboard: http://127.0.0.1:${dashboardPort}"
 Write-Host "Setup:     http://127.0.0.1:${dashboardPort}/setup"
 if ($managedN8n) {
     Write-Host "n8n:       http://127.0.0.1:${n8nPort}"
-    Write-Host "`nCreate the first local n8n owner account, then use the protected dashboard setup page to map CTI credentials. Imported workflows remain disabled until you activate them."
+    Write-Host "`nCreate the first local n8n owner account, then continue from the protected dashboard setup page. A fresh managed installation prepares its database connection automatically; AI and optional Telegram configuration still need review. Imported workflows remain disabled until you activate them."
 } else {
     Write-Host "`nThe CTI database/dashboard are ready. Follow N8N-SETUP.md to connect and import into your existing n8n instance."
 }

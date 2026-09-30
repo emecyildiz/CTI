@@ -1,4 +1,5 @@
 .setup-wizard { max-width: 1000px; margin: 0 auto; }
+.ai-form .provider-advanced { grid-column: 1 / -1; margin: 0; }
 .setup-wizard [hidden] { display: none !important; }
 .wizard-nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; }
 .wizard-nav a { display: flex; align-items: center; gap: .65rem; padding: 1rem; border: 1px solid var(--line); color: var(--muted); text-decoration: none; overflow-wrap: anywhere; }

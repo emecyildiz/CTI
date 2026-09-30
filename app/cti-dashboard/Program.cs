@@ -3041,9 +3041,10 @@ internal static class HtmlPages
             ? $$"""
                 <form class="credential-form readiness-form" method="post" action="/setup/readiness" autocomplete="off">
                   <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
-                  <label>Read-only n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
-                  <fieldset><legend>Components intended for activation</legend><label class="check-option"><input type="checkbox" name="include_ai" value="true" checked> AI analysis and weekly reporting</label><label class="check-option"><input type="checkbox" name="include_telegram_delivery" value="true"> Telegram reports and error alerts (outbound)</label><label class="check-option"><input type="checkbox" name="include_telegram_query" value="true"> Interactive Telegram menu and queries (requires public HTTPS)</label></fieldset>
-                  <div class="credential-guidance"><p>This audit needs only <code>credential:list</code>, <code>workflow:list</code>, and <code>workflow:read</code>. It performs no writes and never activates a workflow.</p><button type="submit">Run read-only audit</button></div>
+                  <label>n8n API key for this check<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+                  <fieldset><legend>What do you want to use?</legend><label class="check-option"><input type="checkbox" name="include_ai" value="true" checked> AI summaries and weekly reports (recommended)</label><label class="check-option"><input type="checkbox" name="include_telegram_delivery" value="true"> Send reports and alerts to Telegram (optional)</label><label class="check-option"><input type="checkbox" name="include_telegram_query" value="true"> Ask questions using the Telegram bot (optional; public HTTPS address needed)</label></fieldset>
+                  <div class="credential-guidance"><p>Not using Telegram? Leave both Telegram boxes unchecked. This checks your settings only: it does not start collecting news, send Telegram messages, or make paid AI requests.</p><button type="submit">Check my setup</button></div>
+                  <details class="setup-advanced"><summary>Advanced: API key permissions</summary><p>This check only needs <code>credential:list</code>, <code>workflow:list</code>, and <code>workflow:read</code>. A key restricted to these read permissions is sufficient. The key is not saved by CTI.</p></details>
                 </form>
                 """
             : "<div class=\"credential-unavailable\"><strong>Activation readiness audit is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
@@ -3094,7 +3095,7 @@ internal static class HtmlPages
               <details class="setup-advanced"><summary>Advanced connection diagnostics</summary><p>{{E(n8nStatus.Detail)}}</p><p>Internal API: {{E(n8nStatus.ApiBaseUrl)}}</p><p>This reachability check does not validate your API key or owner account.</p></details>
             </section>
             <section class="setup-panel ai-panel" id="ai-setup" {{Hidden("ai")}}>
-              <div class="setup-heading"><div><p class="eyebrow">STEP 02</p><h2>AI provider profile</h2></div><span class="check-state {{(aiProvider.ProfileDefined ? "ready" : "warning")}}">{{(aiProvider.ProfileDefined ? "Profile defined" : "Not configured")}}</span></div>
+              <div class="setup-heading"><div><p class="eyebrow">STEP 02</p><h2>Choose your AI service</h2></div><span class="check-state {{(aiProvider.ProfileDefined ? "ready" : "warning")}}">{{(aiProvider.ProfileDefined ? "Selection saved" : "Choose a service")}}</span></div>
               <p class="section-intro">1. Choose a provider and save. 2. Enter the keys and select Connect AI. CTI will connect the key to its included tasks for you. Gemini is currently supported by guided setup; other providers require advanced configuration.</p>
               <details class="setup-advanced"><summary>Saved profile details</summary><div class="ai-profile-grid">
                 <article><span>Provider</span><strong>{{E(providerLabel)}}</strong><small>Stable key: {{E(aiProvider.ProviderKey ?? "—")}}</small></article>
@@ -3108,7 +3109,7 @@ internal static class HtmlPages
                 <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
                 <label>Provider<select name="provider_type" required>{{Options(ProviderOptions, selectedProvider)}}</select></label>
                 <label>Model identifier<input name="model_identifier" value="{{E(selectedModel)}}" minlength="1" maxlength="200" required autocomplete="off"></label>
-                <label>API base URL (optional)<input type="url" name="api_base_url" value="{{E(selectedEndpoint)}}" maxlength="500" placeholder="https://api.example.com/v1" autocomplete="off"></label>
+                <details class="setup-advanced provider-advanced" {{(string.IsNullOrEmpty(selectedEndpoint) ? "" : "open")}}><summary>Advanced: custom service address</summary><p>Leave this empty for the standard provider address. Only change it if your provider gave you a different API address.</p><label>API base URL (optional)<input type="url" name="api_base_url" value="{{E(selectedEndpoint)}}" maxlength="500" placeholder="https://api.example.com/v1" autocomplete="off"></label></details>
                 <div class="form-actions"><p>Saving updates only the non-secret provider profile. It does not test the API or alter n8n.</p><button type="submit">Save AI profile</button></div>
               </form>
               <details class="setup-advanced"><summary>Advanced: provider compatibility</summary><div class="adapter-section">
@@ -3120,7 +3121,7 @@ internal static class HtmlPages
                 </div>
               </div></details>
               <div class="handoff-section">
-                <div class="setup-heading"><div><p class="eyebrow">CREDENTIAL HANDOFF PREFLIGHT</p><h3>n8n boundary check</h3></div><span class="check-state {{(handoffReady ? "ready" : "warning")}}">{{(handoffReady ? "Compatible" : "Not ready")}}</span></div>
+                <div class="setup-heading"><div><p class="eyebrow">CONNECT YOUR KEY</p><h3>Connect the AI service</h3></div><span class="check-state {{(handoffReady ? "ready" : "warning")}}">{{(handoffReady ? "Connection available" : "Check step 1")}}</span></div>
                 <details class="setup-advanced"><summary>Connection diagnostics</summary><div class="handoff-grid">
                   <article><span>Network reachability</span><strong>{{(n8nStatus.Reachable ? "Reachable" : "Unavailable")}}</strong><small>The probe sends no API key or credential data.</small></article>
                   <article><span>Health endpoint</span><strong>{{(n8nStatus.HealthReady ? "Ready" : "Not ready")}}</strong><small>Checked through the configured internal n8n URL.</small></article>
@@ -3135,12 +3136,12 @@ internal static class HtmlPages
               </div></details>
             </section>
             <section class="setup-panel source-panel" id="source-setup" {{Hidden("sources")}}>
-              <div class="setup-heading"><div><p class="eyebrow">STEP 03</p><h2>Reviewed sources</h2></div><span class="check-state ready">Allowlisted catalog</span></div>
-              <p class="section-intro">Choose from the bundled and reviewed source definitions. Feed URLs, article hosts, selectors, and trust scores cannot be edited from this screen.</p>
+              <div class="setup-heading"><div><p class="eyebrow">STEP 03</p><h2>Choose your news sources</h2></div><span class="check-state ready">Available sources</span></div>
+              <p class="section-intro">Select the websites you want CTI to follow. Keep the current selection if you are unsure. Unavailable sources cannot be selected. You can change your selection later.</p>
               <form class="source-form" method="post" action="/setup/sources">
                 <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
                 <div class="source-options">{{sourceCards}}</div>
-                <div class="form-actions"><p>Select at least one source. Changes take effect when the next Source Collection run loads its source list.</p><button type="submit">Save source selection</button></div>
+                <div class="form-actions"><p>Select at least one source and save. Saving does not start collection; finish the final check first.</p><button type="submit">Save selected sources</button></div>
               </form>
             </section>
             <section class="setup-panel database-panel" id="database-setup" {{Hidden("connection")}}>
@@ -3211,15 +3212,16 @@ internal static class HtmlPages
         }));
 
         return Layout("Activation readiness", email, $$"""
-            <section class="hero setup-hero"><p class="eyebrow">READ-ONLY ACTIVATION REVIEW</p><h1>{{(ready ? "Ready for controlled activation" : "Configuration needs attention")}}</h1><p>{{E(result.Message)}}</p></section>
+            <section class="hero setup-hero"><p class="eyebrow">SETUP CHECK RESULTS</p><h1>{{(ready ? "Checks passed — not started yet" : "A few things still need attention")}}</h1><p>{{E(result.Message)}}</p></section>
             <aside class="setup-notice safe-audit"><strong>No changes were made</strong><span>The API key was used only for credential and workflow reads. It was not stored, reflected, or placed in a URL.</span></aside>
             <section class="readiness-results" aria-label="Activation readiness results">{{cards}}</section>
             <section class="setup-panel activation-guidance">
               <div class="setup-heading"><div><p class="eyebrow">MANUAL ACTIVATION</p><h2>{{(ready ? "Proceed one workflow at a time" : "Resolve failed checks first")}}</h2></div><span class="check-state {{(ready ? "ready" : "warning")}}">{{(ready ? "Review passed" : "Not ready")}}</span></div>
               <div class="activation-body">
-                <p>The dashboard intentionally does not activate workflows. When every selected check passes, open n8n and inspect the first execution after each activation.</p>
+                <p>A workflow is an automated task in n8n. This check has not turned any tasks on. Fix any failed checks before starting collection. After the checks pass, open n8n from the installer and enable only the tasks for the features you chose, one at a time. Check that each first run succeeds.</p>
                 <ol><li>CTI Source Collection</li><li>CTI Article Analysis</li><li>CTI Vulnerability Enrichment</li><li>CTI Retention Maintenance</li><li>CTI Weekly Report</li><li>Optional Telegram workflows and error alerts</li></ol>
-                <a class="primary-link" href="/setup">← Return to setup</a>
+                <p>Skip AI or Telegram tasks if you did not configure and check those features. Passing this check confirms the reviewed configuration, not a successful first collection or provider request.</p>
+                <a class="primary-link" href="/setup?step=review">← Return to final check</a>
               </div>
             </section>
             """);

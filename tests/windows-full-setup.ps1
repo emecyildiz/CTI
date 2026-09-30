@@ -38,7 +38,7 @@ function Workflows {
 }
 try {
     $files=@(& git -C $repo -c "safe.directory=$($repo.Replace('\','/'))" ls-files)
-    $files+=@('manage.ps1','scripts/windows-lifecycle.ps1')
+    $files+=@('manage.ps1','scripts/windows-lifecycle.ps1','scripts/managed-bootstrap.ps1','scripts/managed-bootstrap.mjs','scripts/managed-bootstrap-plan.mjs')
     foreach($file in ($files | Select-Object -Unique)) {
         $source=Join-Path $repo $file
         if(-not(Test-Path -LiteralPath $source -PathType Leaf)){continue}
@@ -53,6 +53,8 @@ try {
     Check ((Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$d/health/ready").StatusCode -eq 200) 'dashboard readiness on custom port'
     Check ((Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$n/healthz").StatusCode -eq 200) 'real n8n health on custom port'
     Workflows
+    $receipt = (& docker exec ($owner.project+'-n8n') cat /home/node/.n8n/.cti-managed-bootstrap-v1) | ConvertFrom-Json
+    Check ($receipt.database -and -not $receipt.active -and $receipt.workflows -eq 8) 'managed database binding prepared without an API key'
     [void](Sql "CREATE TABLE public.cti_setup_probe(value text); INSERT INTO public.cti_setup_probe VALUES ('preserved');")
     $envHash=(Get-FileHash -LiteralPath (Join-Path $root '.env')).Hash
     Setup @()

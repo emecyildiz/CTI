@@ -1,6 +1,14 @@
 # n8n credential and activation guide
 
-All public workflow exports are deliberately disabled and contain no credential identifiers. Import them only once, then map operator-owned credentials in the n8n editor.
+All public workflow exports are deliberately disabled and contain no credential identifiers. Import them only once. Manual and external installations then map operator-owned credentials in the n8n editor.
+
+## New Windows managed installations (source implementation)
+
+`setup.ps1` now prepares the private PostgreSQL credential and maps the eight CTI drafts automatically on a fresh installer-owned n8n instance. This step requires neither an n8n API key nor copying a database password. It uses the server CLI inside the owned container, verifies the encrypted credential record and disabled workflow bindings, and leaves every task disabled. The first human n8n owner account still needs to be created normally.
+
+This is not yet a released installer feature. Existing installations are not migrated, and external n8n and `setup.sh` keep their existing paths. AI/Telegram entry and activation readiness still need the subsequent guided-setup work; the optional synthetic AI binding in the isolated acceptance test is not a completed user-facing setup feature.
+
+The bootstrap refuses populated instances. A pending marker blocks automatic retry after an interrupted import; preserve that installation for diagnosis rather than deleting its data or blindly importing again. Secrets travel through stdin and temporary memory-backed files, not process arguments or terminal logs. Local Docker access remains administrative access, not a security boundary against the host administrator.
 
 Before activation, use the protected dashboard `/setup` page to choose at least one source from the bundled reviewed catalog. This action changes only the enabled state of known source definitions; it does not accept URLs or alter their host allowlists, selectors, or trust scores.
 

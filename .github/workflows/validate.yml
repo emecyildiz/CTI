@@ -58,3 +58,7 @@ jobs:
           node-version: '22'
       - name: Real n8n import and credential boundaries (offline runtime)
         run: node scripts/tests/n8n-acceptance.mjs
+      - name: Managed bootstrap plan and offline CLI acceptance
+        run: |
+          node scripts/tests/managed-bootstrap-plan.test.mjs
+          node scripts/tests/managed-bootstrap-acceptance.mjs
