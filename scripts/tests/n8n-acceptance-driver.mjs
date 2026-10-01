@@ -97,6 +97,8 @@ try {
     assert.match((await post('readiness', {}, 200)).text, /Configuration needs attention/);
     pass('unmapped installation fails readiness');
     await post('ai-profile', { provider_type: 'google_gemini', model_identifier: 'gemini-2.5-flash' });
+    await post('telegram-credential-handoff', { connect_workflows: 'true', bot_token: `123456789:${'A'.repeat(35)}`, authorized_chat_id: 'not-a-private-id' }, 400);
+    pass('combined Telegram connection rejects invalid destination before saving');
     const handoffs = [
       ['postgres-credential-handoff', { database_password: databasePassword }],
       ['credential-handoff', { ai_api_key: `dummy-ai-${'A'.repeat(40)}` }],
@@ -113,6 +115,10 @@ try {
       assert.match((await post(path, fields)).location, /workflows_already_mapped$/);
       pass(`${path}: mapping and idempotent readback`);
     }
+    const connectedTelegram = await post('telegram-credential-handoff', { connect_workflows: 'true', bot_token: `123456789:${'A'.repeat(35)}`, authorized_chat_id: '123456789' });
+    assert.match(connectedTelegram.location, /telegram_workflows_mapped$/);
+    assert.ok(!connectedTelegram.text.includes(`123456789:${'A'.repeat(35)}`));
+    pass('combined Telegram save and mapping uses one submitted setup key');
     const all = { include_ai: 'true', include_telegram_delivery: 'true' };
     assert.match((await post('readiness', all, 200)).text, /Ready for controlled activation/);
     assert.match((await post('readiness', { ...all, include_telegram_query: 'true' }, 200)).text,

@@ -644,12 +644,22 @@ app.MapPost("/setup/telegram-credential-handoff", async (
 
     var n8nApiKey = form["n8n_api_key"].FirstOrDefault() ?? string.Empty;
     var botToken = form["bot_token"].FirstOrDefault() ?? string.Empty;
+    var connectTelegram = form["connect_workflows"] == "true";
+    var authorizedChatId = form["authorized_chat_id"].FirstOrDefault() ?? string.Empty;
     if (!IsValidSecretInput(n8nApiKey, 20, 4096) ||
-        !IsValidTelegramBotToken(botToken))
+        !IsValidTelegramBotToken(botToken) || (connectTelegram && !IsValidTelegramPrivateId(authorizedChatId)))
     {
         return Results.BadRequest("Invalid credential input format.");
     }
 
+    if (connectTelegram)
+    {
+        var connected = await SetupSequence.Run(
+            () => n8nProbe.UpsertTelegramCredentialAsync(n8nApiKey, botToken, cancellationToken),
+            value => value.Status is N8nCredentialHandoffStatus.Created or N8nCredentialHandoffStatus.Updated,
+            () => n8nProbe.MapTelegramWorkflowsAsync(n8nApiKey, authorizedChatId, cancellationToken));
+        return SetupConnectionResult(connected.First, connected.Second, "telegram", "telegram_workflows_mapped", GetAuthenticatedIdentity(context));
+    }
     var handoff = await n8nProbe.UpsertTelegramCredentialAsync(
         n8nApiKey,
         botToken,
@@ -3022,10 +3032,13 @@ internal static class HtmlPages
         var telegramCredentialForm = handoffReady
             ? $$"""
                 <form class="credential-form" method="post" action="/setup/telegram-credential-handoff" autocomplete="off">
+                  <input type="hidden" name="connect_workflows" value="true">
                   <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
                   <label>n8n API key<input type="password" name="n8n_api_key" minlength="20" maxlength="4096" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
                   <label>Telegram bot token<input type="password" name="bot_token" minlength="26" maxlength="160" required autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
-                  <div class="credential-guidance"><p>Obtain the token from BotFather. It is written directly to n8n's encrypted credential store under the reserved CTI name.</p><button type="submit">Create or update Telegram credential</button></div>
+                  <label>Your private Telegram user/chat ID<input inputmode="numeric" pattern="[0-9]{5,20}" name="authorized_chat_id" minlength="5" maxlength="20" required autocomplete="off" spellcheck="false"></label>
+                  <div class="credential-guidance"><p>Connect your bot and private destination in one step. This saves the token securely and prepares the included Telegram tasks. It does not send a message or start the bot.</p><button type="submit">Connect Telegram</button></div>
+                  <details class="setup-advanced"><summary>Which values do I enter?</summary><p>Bot token: the secret issued by BotFather for your bot. Private user/chat ID: your numeric Telegram ID, not your username, phone number or a group ID. Reports and alerts use this destination; interactive commands are accepted only from this same private user.</p><p>The n8n API key is the private setup key created in n8n Settings → n8n API. It is different from your bot token.</p></details>
                 </form>
                 """
             : "<div class=\"credential-unavailable\"><strong>Telegram credential input is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
@@ -3093,12 +3106,12 @@ internal static class HtmlPages
             </details>
             <section class="setup-panel" id="n8n-check" {{Hidden("connection")}}>
               <div class="setup-heading"><div><p class="eyebrow">STEP 01</p><h2>Connect the automation service</h2></div><span class="check-state {{(handoffReady ? "ready" : "warning")}}">{{(handoffReady ? "Reachable" : "Needs attention")}}</span></div>
-              <div class="section-intro"><p>n8n runs the news collection and analysis tasks. Open n8n from the installer and create its owner account if you have not done so.</p><p>In n8n, open Settings → n8n API to create an API key for the setup forms. Keep it private. CTI does not store this key between requests.</p><p>Next, connect the database below. This gives workflows access to CTI data; it does not start them.</p></div>
+              <div class="section-intro"><p>n8n runs the news collection and analysis tasks. Open n8n from the installer and create its owner account if you have not done so.</p><p>In n8n, open Settings → n8n API to create an API key for the setup forms. Keep it private. CTI does not store this key between requests.</p><p>{{(installerDatabasePrepared ? "The installer already recorded database setup. Review the note below, then continue to AI." : "Next, connect the database below. This lets the tasks save CTI data without starting collection.")}}</p></div>
               <details class="setup-advanced"><summary>Advanced connection diagnostics</summary><p>{{E(n8nStatus.Detail)}}</p><p>Internal API: {{E(n8nStatus.ApiBaseUrl)}}</p><p>This reachability check does not validate your API key or owner account.</p></details>
             </section>
             <section class="setup-panel ai-panel" id="ai-setup" {{Hidden("ai")}}>
               <div class="setup-heading"><div><p class="eyebrow">STEP 02</p><h2>Choose your AI service</h2></div><span class="check-state {{(aiProvider.ProfileDefined ? "ready" : "warning")}}">{{(aiProvider.ProfileDefined ? "Selection saved" : "Choose a service")}}</span></div>
-              <p class="section-intro">1. Choose a provider and save. 2. Enter the keys and select Connect AI. CTI will connect the key to its included tasks for you. Gemini is currently supported by guided setup; other providers require advanced configuration.</p>
+              <p class="section-intro">Choose your AI service and save the selection. Then enter its API key below and select Connect AI. Gemini supports this guided connection; other providers currently need advanced configuration. Saving your selection alone does not connect the key.</p>
               <details class="setup-advanced"><summary>Saved profile details</summary><div class="ai-profile-grid">
                 <article><span>Provider</span><strong>{{E(providerLabel)}}</strong><small>Stable key: {{E(aiProvider.ProviderKey ?? "—")}}</small></article>
                 <article><span>Model</span><strong>{{E(modelLabel)}}</strong><small>Stored as provider-neutral metadata.</small></article>
@@ -3110,7 +3123,7 @@ internal static class HtmlPages
               <form class="ai-form" method="post" action="/setup/ai-profile">
                 <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
                 <label>Provider<select name="provider_type" required>{{Options(ProviderOptions, selectedProvider)}}</select></label>
-                <label>Model identifier<input name="model_identifier" value="{{E(selectedModel)}}" minlength="1" maxlength="200" required autocomplete="off"></label>
+                <label>Model name<input name="model_identifier" value="{{E(selectedModel)}}" minlength="1" maxlength="200" required autocomplete="off"><small>Keep the suggested value unless your provider gives you a different model name.</small></label>
                 <details class="setup-advanced provider-advanced" {{(string.IsNullOrEmpty(selectedEndpoint) ? "" : "open")}}><summary>Advanced: custom service address</summary><p>Leave this empty for the standard provider address. Only change it if your provider gave you a different API address.</p><label>API base URL (optional)<input type="url" name="api_base_url" value="{{E(selectedEndpoint)}}" maxlength="500" placeholder="https://api.example.com/v1" autocomplete="off"></label></details>
                 <div class="form-actions"><p>Saving updates only the non-secret provider profile. It does not test the API or alter n8n.</p><button type="submit">Save AI profile</button></div>
               </form>
@@ -3170,13 +3183,13 @@ internal static class HtmlPages
                 <article><span>Public routing</span><strong>Operator managed</strong><small>The installer records the URL; it does not create DNS, TLS, reverse-proxy, or tunnel routes.</small></article>
               </div>
               <div class="handoff-section database-handoff-section">
-                <div class="setup-heading"><div><p class="eyebrow">TELEGRAM CREDENTIAL HANDOFF</p><h3>Operator-owned bot token</h3></div></div>
+                <div class="setup-heading"><div><p class="eyebrow">CONNECT YOUR BOT</p><h3>Bot and private destination</h3></div></div>
                 {{telegramCredentialForm}}
               </div>
-              <div class="workflow-mapping-section">
+              <details class="setup-advanced"><summary>Advanced: reconnect an existing Telegram bot</summary><div class="workflow-mapping-section">
                 <div class="setup-heading"><div><p class="eyebrow">PRIVATE CHAT AUTHORIZATION</p><h3>Three bundled workflow drafts</h3></div></div>
                 {{telegramMappingForm}}
-              </div>
+              </div></details>
             </section>
             <section class="setup-panel readiness-panel" id="readiness-setup" {{Hidden("review")}}>
               <div class="setup-heading"><div><p class="eyebrow">STEP 05</p><h2>Check before starting</h2></div><span class="check-state warning">Read only</span></div>

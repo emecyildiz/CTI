@@ -100,8 +100,9 @@ try {
     $r=Post '/setup/ai-profile' $body
     Check ([int]$r.StatusCode -eq 302) 'AI profile saves without 403'; $r.Dispose()
     Check ((Sql 'SELECT model_identifier FROM cti.dashboard_ai_provider_status;') -eq 'acceptance-test-model') 'AI profile persisted in real PostgreSQL'
-    foreach ($endpoint in @('/setup/credential-handoff','/setup/postgres-credential-handoff')) {
+    foreach ($endpoint in @('/setup/credential-handoff','/setup/postgres-credential-handoff','/setup/telegram-credential-handoff')) {
         $attempt="_csrf=$token&connect_workflows=true&n8n_api_key=synthetic-acceptance-key-only&ai_api_key=synthetic-provider-key-only&database_password=synthetic-database-password-only"
+        $attempt += '&bot_token=123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&authorized_chat_id=123456789'
         $r=Post $endpoint $attempt
         $errorBody=$r.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         Check ([int]$r.StatusCode -eq 503 -and $errorBody.Contains('Return to setup')) 'combined setup shows recoverable failure page'
