@@ -27,8 +27,11 @@ internal static class SetupGuide
 
     internal sealed record NextStep(string Target, string Title, string Detail);
 
+    internal static bool HasInstallerDatabaseRecord(string? authMode, string? managed, string? recorded) =>
+        authMode == "local" && managed == "true" && recorded == "true";
+
     // A navigation hint, never a persisted completion/activation decision.
-    internal static NextStep Next(bool n8nReady, bool profileDefined, bool bundledAdapter, long enabledSources)
+    internal static NextStep Next(bool n8nReady, bool profileDefined, bool bundledAdapter, long enabledSources, bool installerDatabasePrepared = false)
     {
         if (!n8nReady) return new("#n8n-check", "Connect n8n first",
             "Open n8n from the installer and create its owner account if needed. Then return here and refresh this page. No API key is sent by the connection check.");
@@ -38,6 +41,8 @@ internal static class SetupGuide
             "The bundled automatic credential setup supports Gemini. Other providers require manual workflow changes; a saved profile does not make them ready to run.");
         if (enabledSources <= 0) return new("#source-setup", "Select at least one news source",
             "Choose from the reviewed catalog. Collection only starts after the required workflows are configured and explicitly activated.");
+        if (installerDatabasePrepared) return new("#readiness-setup", "Review your setup before starting",
+            "The installer recorded automatic database setup. Confirm your AI connection and run the final check; it verifies the current task configuration and does not start collection.");
         return new("#database-setup", "Review credentials, then run the readiness check",
             "A provider profile and selected sources are present. AI and database credential mapping still need verification. Telegram is optional. The final check does not activate workflows.");
     }

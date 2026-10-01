@@ -232,6 +232,7 @@ Write-Step 'Validating and starting CTI services'
 # Pin Compose inputs; inherited COMPOSE_FILE/profiles must not redirect setup.
 $env:COMPOSE_FILE = Join-Path $PSScriptRoot 'compose.yml'
 $env:COMPOSE_PROFILES = if ($managedN8n) { 'managed-n8n' } else { '' }
+$env:CTI_DATABASE_BOOTSTRAP_RECORDED = if ($managedN8n -and $environmentValues['CTI_DATABASE_BOOTSTRAP_RECORDED'] -ceq 'true') { 'true' } else { 'false' }
 foreach ($key in $environmentValues.Keys) {
     if ($key -cmatch '^(CTI_|N8N_|POSTGRES_)[A-Z0-9_]+$') { [Environment]::SetEnvironmentVariable($key, [string]$environmentValues[$key], 'Process') }
 }
@@ -294,6 +295,10 @@ if ($managedN8n) {
             Write-Step 'Preparing the private CTI data connection automatically'
             . (Join-Path $PSScriptRoot 'scripts/managed-bootstrap.ps1')
             Invoke-CtiFreshManagedBootstrap $PSScriptRoot $environmentValues
+            # Historical UI hint only; no credential, API key or readiness claim.
+            Set-EnvironmentValue 'CTI_DATABASE_BOOTSTRAP_RECORDED' 'true'
+            $env:CTI_DATABASE_BOOTSTRAP_RECORDED = 'true'
+            Invoke-Docker ($composeArguments + @('up', '-d', '--no-deps', '--no-build', '--wait', '--wait-timeout', '60', 'cti-dashboard'))
             $connectionOutcome = 'prepared'
         } elseif ($LASTEXITCODE -ne 0) {
             Write-Step 'Importing the CTI workflows in disabled state'

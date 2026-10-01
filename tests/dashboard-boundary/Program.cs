@@ -103,6 +103,15 @@ if (setupRejection.StatusCode != 403 || setupRejection.ContentType != "text/html
     throw new Exception("Setup rejection must remain 403 with safe recovery guidance.");
 Console.WriteLine("PASS: setup rejection status/content/recovery contract.");
 
+if (!SetupGuide.HasInstallerDatabaseRecord("local", "true", "true")) throw new Exception("Managed installer record not recognized.");
+foreach (var flags in new[] { ("cloudflare", "true", "true"), ("local", "false", "true"), ("local", "true", "false"), ("local", "true", "TRUE"), ("local", "true", "") })
+    if (SetupGuide.HasInstallerDatabaseRecord(flags.Item1, flags.Item2, flags.Item3)) throw new Exception("Unconfirmed installer record accepted.");
+if (SetupGuide.Next(true, true, true, 2, true).Target != "#readiness-setup" ||
+    SetupGuide.Next(true, true, true, 2, false).Target != "#database-setup" ||
+    SetupGuide.Next(false, true, true, 2, true).Target != "#n8n-check")
+    throw new Exception("Installer history must not skip missing live n8n connection or final verification.");
+Console.WriteLine("PASS: managed installer history, external/unknown refusal and navigation boundaries.");
+
 var validUrls = new[] { "https://hooks.example.com/", "https://Hooks.Example.com:8443/n8n/v1/", "https://hooks.example.com/a%20b/" };
 var invalidUrls = new[] { "https://10.0.0.5/", "https://192.168.1.20/", "https://[::]/", "https://[::1]/", "https://127.0.0.1/",
     "https://0.0.0.0/", "https://169.254.169.254/", "https://hooks.localhost/", "https://hooks.local/", "https://hooks.internal/",

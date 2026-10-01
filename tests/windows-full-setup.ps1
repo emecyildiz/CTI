@@ -55,6 +55,10 @@ try {
     Workflows
     $receipt = (& docker exec ($owner.project+'-n8n') cat /home/node/.n8n/.cti-managed-bootstrap-v1) | ConvertFrom-Json
     Check ($receipt.database -and -not $receipt.active -and $receipt.workflows -eq 8) 'managed database binding prepared without an API key'
+    Check ([bool](Select-String -LiteralPath (Join-Path $root '.env') -Pattern '^CTI_DATABASE_BOOTSTRAP_RECORDED=true$')) 'installer stores non-secret database history'
+    $setupPage = (Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$d/setup?step=connection").Content
+    Check ($setupPage.Contains('Your installer recorded automatic database connection setup.')) 'dashboard displays managed bootstrap history'
+    Check ($setupPage.Contains('Advanced: reconnect the database if needed')) 'automatic setup moves password form into advanced section'
     [void](Sql "CREATE TABLE public.cti_setup_probe(value text); INSERT INTO public.cti_setup_probe VALUES ('preserved');")
     $envHash=(Get-FileHash -LiteralPath (Join-Path $root '.env')).Hash
     Setup @()

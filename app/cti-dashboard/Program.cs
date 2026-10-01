@@ -185,7 +185,8 @@ app.MapGet("/setup", async (
             telegramRuntime,
             csrfToken,
             result,
-            GetAuthenticatedIdentity(context), step),
+            GetAuthenticatedIdentity(context), step,
+            SetupGuide.HasInstallerDatabaseRecord(authenticationMode, builder.Configuration["CTI_MANAGED_N8N"], builder.Configuration["CTI_DATABASE_BOOTSTRAP_RECORDED"])),
         "text/html; charset=utf-8");
 });
 
@@ -2886,7 +2887,8 @@ internal static class HtmlPages
         string csrfToken,
         string? result,
         string email,
-        string? requestedStep = null)
+        string? requestedStep = null,
+        bool installerDatabasePrepared = false)
     {
         var sourceHealthClass = status.FailingSourceCount > 0 ? "warning" : "ready";
         var sourceHealthLabel = status.FailingSourceCount > 0
@@ -2974,7 +2976,7 @@ internal static class HtmlPages
                                   string.Equals(aiProvider.ProviderKey, "google_gemini", StringComparison.Ordinal) &&
                                   string.Equals(aiProvider.AdapterKey, "google_gemini", StringComparison.Ordinal);
         var nextStep = SetupGuide.Next(handoffReady, aiProvider.ProfileDefined,
-            aiProvider.AdapterStatus == "bundled", status.EnabledSourceCount);
+            aiProvider.AdapterStatus == "bundled", status.EnabledSourceCount, installerDatabasePrepared);
         var credentialForm = credentialFormReady
             ? $$"""
                 <form class="credential-form" method="post" action="/setup/credential-handoff" autocomplete="off">
@@ -3146,11 +3148,13 @@ internal static class HtmlPages
             </section>
             <section class="setup-panel database-panel" id="database-setup" {{Hidden("connection")}}>
               <div class="setup-heading"><div><p class="eyebrow">STEP 01 · DATABASE</p><h2>Connect CTI data</h2></div><span class="check-state warning">Verify in final check</span></div>
-              <p class="section-intro">This lets CTI save the news it collects. Enter the setup key and installation password below, then select Connect CTI data.</p>
+              <p class="section-intro">{{(installerDatabasePrepared ? "Your installer recorded automatic database connection setup. Continue to the AI and news-source steps; you do not need to copy the database password for this installation step. The final check still verifies the current task configuration." : "This lets CTI save the news it collects. Enter the setup key and installation password below, then select Connect CTI data.")}}</p>
+              {{(installerDatabasePrepared ? "<details class=\"setup-advanced\"><summary>Advanced: reconnect the database if needed</summary>" : "")}}
               <div class="handoff-section database-handoff-section">
                 <div class="setup-heading"><div><h3>Database connection</h3></div></div>
                 {{postgresCredentialForm}}
               </div>
+              {{(installerDatabasePrepared ? "</details>" : "")}}
               <details class="setup-advanced"><summary>Advanced: reconnect an existing database credential</summary><div class="workflow-mapping-section">
                 <div class="setup-heading"><div><p class="eyebrow">DATABASE WORKFLOW MAPPING</p><h3>Bundled workflow drafts</h3></div></div>
                 {{postgresMappingForm}}
