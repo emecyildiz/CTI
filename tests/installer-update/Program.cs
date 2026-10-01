@@ -23,6 +23,11 @@ string Package(string name, string version, string content)
 }
 try
 {
+    Check(SetupOutcome.Read("normal output\r\nCTI_SETUP_RESULT:v1:prepared\r\n") == ConnectionOutcome.Prepared, "structured result supports PowerShell line endings");
+    foreach (var output in new[] { "", "Database prepared", "CTI_SETUP_RESULT:v1:prepared extra", "CTI_SETUP_RESULT:v2:prepared", "CTI_SETUP_RESULT:v1:prepared\nCTI_SETUP_RESULT:v1:preserved" })
+        Check(SetupOutcome.Read(output) == ConnectionOutcome.Unknown, "missing malformed or conflicting connection result stays unconfirmed");
+    Check(SetupOutcome.Read("CTI_SETUP_RESULT:v1:preserved") == ConnectionOutcome.Preserved, "reinstall preserves state without asserting connection readiness");
+    Check(SetupOutcome.Description(ConnectionOutcome.Preserved).Contains("not tested"), "preserved state explains verification limitation");
     Check(RequirementGuidance.Failure(RequirementStage.Command).Contains("reopen"), "new Docker install explains installer restart");
     Check(RequirementGuidance.Failure(RequirementStage.Compose).Contains("repair"), "missing Compose offers repair guidance");
     Check(RequirementGuidance.Failure(RequirementStage.Engine).Contains("cannot reach"), "engine failure does not claim Docker is missing");

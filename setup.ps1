@@ -271,8 +271,10 @@ if (-not $dashboardReady) {
     Stop-Setup 'The dashboard did not become ready in time.'
 }
 
+$connectionOutcome = 'external'
 if ($managedN8n) {
     $n8nContainer = if ($environmentValues['N8N_CONTAINER']) { $environmentValues['N8N_CONTAINER'] } else { 'cti-n8n' }
+    $connectionOutcome = 'skipped'
     Write-Step 'Waiting for the managed n8n service'
     $n8nReady = $false
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
@@ -292,6 +294,7 @@ if ($managedN8n) {
             Write-Step 'Preparing the private CTI data connection automatically'
             . (Join-Path $PSScriptRoot 'scripts/managed-bootstrap.ps1')
             Invoke-CtiFreshManagedBootstrap $PSScriptRoot $environmentValues
+            $connectionOutcome = 'prepared'
         } elseif ($LASTEXITCODE -ne 0) {
             Write-Step 'Importing the CTI workflows in disabled state'
             & docker exec $n8nContainer rm -rf /tmp/cti-self-hosted-workflows 2>$null
@@ -301,11 +304,13 @@ if ($managedN8n) {
             Invoke-Docker @('exec', $n8nContainer, 'sh', '-c', 'touch /home/node/.n8n/.cti-workflows-imported-v1 && rm -rf /tmp/cti-self-hosted-workflows')
         } else {
             Write-Host 'CTI workflows were already imported; duplicate import skipped.'
+            $connectionOutcome = 'preserved'
         }
     }
 }
 
 Write-Host "`nCTI Self-Hosted is running." -ForegroundColor Green
+Write-Host "CTI_SETUP_RESULT:v1:$connectionOutcome"
 Write-Host "Dashboard: http://127.0.0.1:${dashboardPort}"
 Write-Host "Setup:     http://127.0.0.1:${dashboardPort}/setup"
 if ($managedN8n) {

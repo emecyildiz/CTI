@@ -524,6 +524,8 @@ internal sealed class InstallerForm : Form
             activity.Text = "Starting CTI services and preparing connections. The first installation may take several minutes.";
             var result = await RunProcessAsync(powershell, arguments, destination, true, TimeSpan.FromMinutes(20));
             if (result.ExitCode != 0) throw new InvalidOperationException($"Setup stopped with exit code {result.ExitCode}.");
+            var connectionOutcome = managedN8n.Checked ? SetupOutcome.Read(result.Output) : ConnectionOutcome.External;
+            var connectionDescription = SetupOutcome.Description(connectionOutcome);
 
             PackageUpdate.Complete(destination, InstallerVersion);
             try { RecentInstallations.Remember(RecentInstallations.DefaultStore, destination); }
@@ -535,13 +537,12 @@ internal sealed class InstallerForm : Form
             n8nUrl = $"http://127.0.0.1:{n8nPort.Value}";
             SetRequirement("CTI Self-Hosted was installed successfully.", Color.FromArgb(24, 128, 56));
             AppendLog("Installation completed successfully.");
-            activity.Text = RequirementGuidance.NextStep(managedN8n.Checked);
+            activity.Text = connectionDescription + "\n\n" + RequirementGuidance.NextStep(managedN8n.Checked);
             openDashboardButton.Enabled = true;
             openSetupButton.Enabled = true;
             openN8nButton.Enabled = managedN8n.Checked;
-            MessageBox.Show(this, plan.InstalledVersion is null
-                ? "CTI services are installed. Create the first n8n owner account if needed, then click Continue setup to configure CTI. Workflows remain disabled until you explicitly activate them."
-                : "CTI package setup completed. Existing n8n workflows and credentials were preserved, not upgraded. Use Open setup to finish or review configuration; package installation does not mean configuration is complete.", "Installation complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, connectionDescription + "\n\n" + RequirementGuidance.NextStep(managedN8n.Checked),
+                "Installation complete — continue setup", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception exception)
         {
