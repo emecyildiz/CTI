@@ -40,6 +40,7 @@ internal sealed class InstallerForm : Form
     private readonly Button openDashboardButton = new();
     private readonly Button openSetupButton = new();
     private readonly Button openN8nButton = new();
+    private readonly Button connectAiButton = new() { Text = "Connect AI", AutoSize = true, Visible = false };
     private readonly NumericUpDown dashboardPort = new() { Minimum = 1, Maximum = 65535, Value = 8080, Width = 85 };
     private readonly NumericUpDown n8nPort = new() { Minimum = 1, Maximum = 65535, Value = 5678, Width = 85 };
     private readonly ComboBox managementAction = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210 };
@@ -310,6 +311,8 @@ internal sealed class InstallerForm : Form
         panel.Controls.Add(openDashboardButton);
         panel.Controls.Add(openSetupButton);
         panel.Controls.Add(openN8nButton);
+        connectAiButton.Click += async (_, _) => await ConnectAiAsync();
+        panel.Controls.Add(connectAiButton);
         managementAction.Items.AddRange(["Stop (keep data)", "Remove services (keep data)", "Purge CTI data and package"]);
         managementAction.SelectedIndex = 0;
         manageButton.Click += async (_, _) => await ManageAsync();
@@ -369,6 +372,8 @@ internal sealed class InstallerForm : Form
                 ? (managedN8n.Checked ? "Recommended: CTI manages its automation service for you." : "Advanced: you will connect and configure your existing n8n service.") + $"\nInstallation folder: {destination}"
                 : $"Existing CTI installation ({installed})\nFolder: {destination}\nYour saved settings and data will be preserved.";
             manageButton.Visible = managementAction.Visible = File.Exists(Path.Combine(destination, ".cti-owner.json"));
+            connectAiButton.Visible = managedN8n.Checked && manageButton.Visible && CanOfferManagedAi(destination);
+            connectAiButton.Enabled = connectAiButton.Visible && dockerReady && HasEmbeddedPayload();
             managedN8n.Enabled = existingN8n.Enabled = !hasConfig;
             installButton.Enabled = dockerReady && HasEmbeddedPayload();
         }
@@ -377,7 +382,53 @@ internal sealed class InstallerForm : Form
             installationStatus.Text = exception.Message;
             installationStatus.ForeColor = Color.FromArgb(190, 45, 45);
             installButton.Enabled = false;
+            connectAiButton.Enabled = false;
         }
+    }
+
+    private async Task ConnectAiAsync()
+    {
+        if (operationRunning) return;
+        using var dialog = new AiKeyDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var temporary = Path.Combine(Path.GetTempPath(), $"cti-installer-{Guid.NewGuid():N}");
+        string? input = null;
+        try
+        {
+            var destination = ValidateDestination(installPath.Text);
+            SetBusy(true); SetInputsEnabled(false);
+            activity.Text = "Checking installation ownership and preparing the AI connection. No tasks will be started.";
+            Directory.CreateDirectory(temporary);
+            var package = ExtractPayload(temporary);
+            var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+            input = JsonSerializer.Serialize(new { aiKey = dialog.TakeKey() });
+            var result = await RunProcessAsync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(package, "scripts", "managed-ai-connect.ps1"), "-InstallationPath", destination], package, false, TimeSpan.FromMinutes(8), input);
+            if (!AiConnection.Prepared(result.ExitCode, result.Output)) throw new InvalidOperationException();
+            activity.Text = "AI key saved and two AI tasks connected. The provider has not been tested; all tasks remain disabled. Continue the AI profile and final review in your browser.";
+            AppendLog("Managed AI connection prepared. No API key was logged and no tasks were activated.");
+        }
+        catch
+        {
+            activity.Text = "AI preparation needs attention. Keep the installation folder; a partial update may need review before retrying. No tasks were activated.";
+            MessageBox.Show(this, activity.Text, "AI connection not completed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            input = null;
+            TryDeleteOwnedTemporaryDirectory(temporary);
+            SetBusy(false); SetInputsEnabled(true); RefreshInstallAction();
+        }
+    }
+
+    private static bool CanOfferManagedAi(string destination)
+    {
+        try
+        {
+            var file = new FileInfo(Path.Combine(destination, ".env"));
+            return file.Exists && file.Length <= 65536 && (file.Attributes & FileAttributes.ReparsePoint) == 0
+                && AiConnection.CanOffer(File.ReadAllText(file.FullName));
+        }
+        catch { return false; }
     }
 
     private async Task ManageAsync()
@@ -671,7 +722,7 @@ internal sealed class InstallerForm : Form
         }
     }
 
-    private async Task<ProcessResult> RunProcessAsync(string fileName, IEnumerable<string> arguments, string? workingDirectory, bool streamToLog, TimeSpan timeout)
+    private async Task<ProcessResult> RunProcessAsync(string fileName, IEnumerable<string> arguments, string? workingDirectory, bool streamToLog, TimeSpan timeout, string? standardInput = null)
     {
         using var process = new Process();
         process.StartInfo = new ProcessStartInfo
@@ -682,6 +733,7 @@ internal sealed class InstallerForm : Form
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = standardInput is not null,
         };
         foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
 
@@ -701,6 +753,11 @@ internal sealed class InstallerForm : Form
         using var cancellation = new CancellationTokenSource(timeout);
         try
         {
+            if (standardInput is not null)
+            {
+                await process.StandardInput.WriteAsync(standardInput.AsMemory(), cancellation.Token);
+                process.StandardInput.Close();
+            }
             await process.WaitForExitAsync(cancellation.Token);
             process.WaitForExit();
         }
@@ -708,6 +765,12 @@ internal sealed class InstallerForm : Form
         {
             try { process.Kill(entireProcessTree: true); } catch { }
             throw new TimeoutException($"{Path.GetFileName(fileName)} did not finish within {timeout.TotalMinutes:0.#} minutes.");
+        }
+        catch
+        {
+            // A broken stdin pipe must not leave a detached installer/connection process.
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+            throw;
         }
         return new ProcessResult(process.ExitCode, string.Join(Environment.NewLine, output));
     }
@@ -749,6 +812,7 @@ internal sealed class InstallerForm : Form
         checkButton.Enabled = !busy;
         manageButton.Enabled = !busy;
         managementAction.Enabled = !busy;
+        if (busy) connectAiButton.Enabled = false;
         if (busy) installButton.Enabled = false;
     }
 

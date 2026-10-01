@@ -146,6 +146,8 @@ The guided installer:
 
 The user still creates the first local n8n owner account. The protected setup page can then select from the reviewed source catalog and create and map the operator-owned PostgreSQL, bundled Gemini, and optional Telegram credentials. Workflows are never activated automatically.
 
+The unreleased Windows installer source also offers **Connect AI** for an installer-owned managed n8n service after a fresh automatic database bootstrap. Enter only your Gemini API key in its password field; no n8n API key is required for this action. The embedded package verifies the installation record, Docker engine, container ownership and pinned n8n image before sending the key on stdin. It updates only the two reviewed, inactive AI tasks and preserves the other six tasks. The key is stored encrypted by n8n, not in the installer log or host `.env`. This prepares bindings only: it does not call the AI provider or activate tasks. Existing/manual or modified workflow installations can be refused; do not overwrite a partial operation to bypass a refusal. Telegram and the final readiness audit still use the protected browser setup flow.
+
 Published GitHub releases contain a versioned ZIP, its SHA-256 checksum, a JSON manifest, a self-contained Windows x64 installer, and a version-pinned Linux installer. Both installers have separate checksums. The release pipeline is triggered only by a matching version tag and builds every installation format from that exact tagged commit.
 
 ## Manual installation or existing n8n

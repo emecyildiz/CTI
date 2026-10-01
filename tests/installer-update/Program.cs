@@ -23,6 +23,17 @@ string Package(string name, string version, string content)
 }
 try
 {
+    Check(AiConnection.ValidKey(new string('a', 20)) && AiConnection.ValidKey(new string('a', 512)), "AI key bounds accepted");
+    foreach (var key in new[] { "", new string('a', 19), new string('a', 513), "synthetic key contains space", "synthetic-key-with\nnewline", "synthetic-key-with-ş" })
+        Check(!AiConnection.ValidKey(key), "invalid AI key format refused");
+    Check(AiConnection.Prepared(0, "CTI_MANAGED_AI_RESULT:v1:prepared\r\n"), "AI success accepts PowerShell newline");
+    foreach (var output in new[] { "", "prepared", "CTI_MANAGED_AI_RESULT:v1:prepared\nextra output", "CTI_MANAGED_AI_RESULT:v1:failed" })
+        Check(!AiConnection.Prepared(0, output), "AI malformed result never claims success");
+    Check(!AiConnection.Prepared(1, "CTI_MANAGED_AI_RESULT:v1:prepared"), "AI exit failure overrides marker");
+    var eligible = "CTI_MANAGED_N8N=true\r\nCTI_DATABASE_BOOTSTRAP_RECORDED=true\r\n";
+    Check(AiConnection.CanOffer(eligible), "managed bootstrap history offers keyless AI action");
+    foreach (var config in new[] { "", "CTI_MANAGED_N8N=true", eligible.Replace("=true", "=TRUE"), eligible + "CTI_MANAGED_N8N=true", eligible + "\0", new string('x', 65537) })
+        Check(!AiConnection.CanOffer(config), "unknown malformed or legacy history hides keyless AI action");
     Check(SetupOutcome.Read("normal output\r\nCTI_SETUP_RESULT:v1:prepared\r\n") == ConnectionOutcome.Prepared, "structured result supports PowerShell line endings");
     foreach (var output in new[] { "", "Database prepared", "CTI_SETUP_RESULT:v1:prepared extra", "CTI_SETUP_RESULT:v2:prepared", "CTI_SETUP_RESULT:v1:prepared\nCTI_SETUP_RESULT:v1:preserved" })
         Check(SetupOutcome.Read(output) == ConnectionOutcome.Unknown, "missing malformed or conflicting connection result stays unconfirmed");

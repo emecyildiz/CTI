@@ -41,6 +41,7 @@ jobs:
           ./tests/setup-inputs.ps1
           ./tests/windows-lifecycle.ps1
           ./tests/windows-setup-flow.ps1
+          ./tests/managed-ai-host.ps1
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
