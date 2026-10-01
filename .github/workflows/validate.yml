@@ -67,4 +67,5 @@ jobs:
       - name: Managed bootstrap plan and offline CLI acceptance
         run: |
           node scripts/tests/managed-bootstrap-plan.test.mjs
+          node scripts/tests/managed-ai-plan.test.mjs
           node scripts/tests/managed-bootstrap-acceptance.mjs

@@ -3231,7 +3231,7 @@ internal static class HtmlPages
         return Layout("Activation readiness", email, $$"""
             <section class="hero setup-hero"><p class="eyebrow">SETUP CHECK RESULTS</p><h1>{{(ready ? "Checks passed — not started yet" : "A few things still need attention")}}</h1><p>{{E(result.Message)}}</p></section>
             <aside class="setup-notice safe-audit"><strong>No changes were made</strong><span>The API key was used only for credential and workflow reads. It was not stored, reflected, or placed in a URL.</span></aside>
-            <section class="readiness-results" aria-label="Activation readiness results">{{cards}}</section>
+            <section class="readiness-results" data-readiness="{{(ready ? "ready" : "not-ready")}}" aria-label="Activation readiness results">{{cards}}</section>
             <section class="setup-panel activation-guidance">
               <div class="setup-heading"><div><p class="eyebrow">MANUAL ACTIVATION</p><h2>{{(ready ? "Proceed one workflow at a time" : "Resolve failed checks first")}}</h2></div><span class="check-state {{(ready ? "ready" : "warning")}}">{{(ready ? "Review passed" : "Not ready")}}</span></div>
               <div class="activation-body">

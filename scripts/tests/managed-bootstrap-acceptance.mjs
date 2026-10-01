@@ -23,6 +23,10 @@ try {
   try { docker(['exec','-i',name,'node','/tmp/managed-bootstrap.mjs'],payload); } catch { refused = true; }
   assert.ok(refused);
   console.log('PASS: repeat bootstrap refused; existing setup not overwritten.');
+  for(const file of ['managed-ai-connect.mjs','managed-ai-plan.mjs']) docker(['cp',resolve(root,'scripts',file),`${name}:/tmp/${file}`]);
+  const aiResult=docker(['exec','-i',name,'node','/tmp/managed-ai-connect.mjs'],JSON.stringify({aiKey:'replacement-synthetic-ai-key-only'}));
+  assert.match(aiResult,/CTI_MANAGED_AI_RESULT:v1:prepared/);
+  console.log('PASS: managed AI credential updated and two tasks mapped without n8n API key; unrelated tasks preserved.');
   docker(['exec',name,'rm','/home/node/.n8n/.cti-managed-bootstrap-v1']);
   docker(['exec',name,'touch','/home/node/.n8n/.cti-managed-bootstrap-pending-v1']);
   refused = false;

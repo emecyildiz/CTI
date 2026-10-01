@@ -94,7 +94,7 @@ try {
       assert.ok(!response.text.includes(apiKey), 'API key must never be reflected');
       return { text: response.text, location: response.headers.location };
     };
-    assert.match((await post('readiness', {}, 200)).text, /Configuration needs attention/);
+    assert.match((await post('readiness', {}, 200)).text, /data-readiness="not-ready"/);
     pass('unmapped installation fails readiness');
     await post('ai-profile', { provider_type: 'google_gemini', model_identifier: 'gemini-2.5-flash' });
     await post('telegram-credential-handoff', { connect_workflows: 'true', bot_token: `123456789:${'A'.repeat(35)}`, authorized_chat_id: 'not-a-private-id' }, 400);
@@ -120,9 +120,9 @@ try {
     assert.ok(!connectedTelegram.text.includes(`123456789:${'A'.repeat(35)}`));
     pass('combined Telegram save and mapping uses one submitted setup key');
     const all = { include_ai: 'true', include_telegram_delivery: 'true' };
-    assert.match((await post('readiness', all, 200)).text, /Ready for controlled activation/);
+    assert.match((await post('readiness', all, 200)).text, /data-readiness="ready"/);
     assert.match((await post('readiness', { ...all, include_telegram_query: 'true' }, 200)).text,
-      /Configuration needs attention/);
+      /data-readiness="not-ready"/);
     pass('AI/delivery readiness passes; query without public HTTPS configuration stays blocked');
     workflows = (await api('workflows?limit=100')).data;
     const detailed = await Promise.all(workflows.map(w => api(`workflows/${w.id}`)));
@@ -157,10 +157,10 @@ try {
 
     query.settings.errorWorkflow = 'stale-source-installation-id';
     await api(`workflows/${query.id}`, payload(query));
-    assert.match((await post('readiness', all, 200)).text, /Configuration needs attention/);
+    assert.match((await post('readiness', all, 200)).text, /data-readiness="not-ready"/);
     assert.match((await post('postgres-workflow-mapping')).location, /workflows_mapped$/);
     assert.equal((await api(`workflows/${query.id}`)).settings.errorWorkflow, errorHandler.id);
-    assert.match((await post('readiness', all, 200)).text, /Ready for controlled activation/);
+    assert.match((await post('readiness', all, 200)).text, /data-readiness="ready"/);
     query.settings.errorWorkflow = errorHandler.id;
     pass('stale error route blocks readiness and is repaired even when credentials are already mapped');
 
@@ -168,16 +168,16 @@ try {
     errorHandler.nodes.find(n => n.name === 'Error Trigger').disabled = true;
     await api(`workflows/${errorHandler.id}`, payload(errorHandler));
     await post('postgres-workflow-mapping', {}, 409);
-    assert.match((await post('readiness', all, 200)).text, /Configuration needs attention/);
+    assert.match((await post('readiness', all, 200)).text, /data-readiness="not-ready"/);
     await api(`workflows/${errorHandler.id}`, payload(originalHandler));
     pass('disabled error handler blocks relinking and readiness');
 
     query.nodes.find(n => n.name === 'Authorize and Parse Request').disabled = true;
     await api(`workflows/${query.id}`, payload(query));
     await post('telegram-workflow-mapping', { authorized_chat_id: '123456789' }, 409);
-    assert.match((await post('readiness', all, 200)).text, /Configuration needs attention/);
+    assert.match((await post('readiness', all, 200)).text, /data-readiness="not-ready"/);
     await api(`workflows/${query.id}`, payload(original));
-    assert.match((await post('readiness', all, 200)).text, /Ready for controlled activation/);
+    assert.match((await post('readiness', all, 200)).text, /data-readiness="ready"/);
     pass('disabled authorization guard blocks mapping/readiness; restoring draft recovers');
     assert.ok((await api('workflows?limit=100')).data.every(w => !w.active && !w.activeVersionId));
     assert.equal((await api('executions?limit=100')).data.length, 0);
