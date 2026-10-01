@@ -77,7 +77,7 @@ internal sealed class InstallerForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(root);
 
@@ -211,7 +211,8 @@ internal sealed class InstallerForm : Form
     {
         var panel = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            AutoSize = true,
             ColumnCount = 1,
             RowCount = 5,
             Margin = new Padding(0, 0, 0, 12),
@@ -220,7 +221,7 @@ internal sealed class InstallerForm : Form
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         var statusRow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
         requirementStatus.AutoSize = true;
@@ -257,7 +258,8 @@ internal sealed class InstallerForm : Form
         progress.Margin = new Padding(0, 8, 0, 8);
         panel.Controls.Add(progress, 0, 1);
 
-        log.Dock = DockStyle.Fill;
+        log.Dock = DockStyle.Top;
+        log.Height = 180;
         log.ReadOnly = true;
         log.BackColor = Color.FromArgb(18, 22, 28);
         log.ForeColor = Color.FromArgb(221, 226, 232);
