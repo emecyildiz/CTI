@@ -33,6 +33,8 @@ The installer runs as the current user and does not request administrator elevat
 
 Unreleased Windows source simplifies the next steps for fresh managed installations: database preparation is automatic; **Connect AI**, **Connect Telegram (optional)**, and **Check setup** are in the setup app, while source selection is in the browser. AI and Telegram are optional. Browser manual forms remain available under advanced setup. The preparation check does not test real API keys or activate tasks. See [the managed setup guide](N8N-SETUP.md#simple-windows-setup-path-unreleased-source); the published rc.9 EXE does not yet include these changes.
 
+Testing the unreleased Windows candidate? Follow the [separate Windows acceptance checklist](WINDOWS-TEST-CHECKLIST.md) so a fresh managed test does not overwrite or remove your existing installation.
+
 ### Windows ports and management (rc.8)
 
 These changes require the **rc.8 or newer Windows package**; rc.7 does not include them. Linux/macOS setup is unchanged in this package.

@@ -93,7 +93,9 @@ This records `CTI_TELEGRAM_QUERY_ENABLED=true`, sets n8n's `WEBHOOK_URL`, and de
 
 For an existing n8n installation, set `WEBHOOK_URL` and the correct `N8N_PROXY_HOPS` value in that n8n deployment, then set the matching `CTI_TELEGRAM_QUERY_ENABLED` and `N8N_WEBHOOK_URL` values in CTI's `.env` so the dashboard can report readiness. The dashboard validates configuration shape but does not create or probe external routing.
 
-## Read-only activation audit
+## Advanced manual read-only activation audit
+
+Fresh installer-owned Windows managed setups use **Check setup** in the setup app instead; that path needs no n8n API key and checks encrypted local exports. The API-based browser audit below is the advanced/manual path. Neither audit proves that real credentials work or that a public webhook is reachable.
 
 Return to the protected dashboard `/setup` page after credential handoff and workflow mapping. In **Activation readiness**, enter a temporary n8n API key with only these scopes:
 
@@ -130,11 +132,12 @@ delivery. Configure the Telegram credential and private destination separately.
 Activate one workflow at a time and inspect its first execution:
 
 1. `CTI Source Collection`
-2. `CTI Article Analysis`
+2. `CTI Article Analysis` — only if AI is configured
 3. `CTI Vulnerability Enrichment`
 4. `CTI Retention Maintenance`
-5. `CTI Weekly Report`
-6. optional Telegram workflows
-7. optional n8n error alerts
+5. `CTI Weekly Report` — only if AI is configured
+6. `CTI Weekly Telegram Delivery` — only if both AI reporting and Telegram are configured
+7. `n8n Workflow Error Alerts` — only if Telegram is configured
+8. `CTI Telegram Query` — only if Telegram is configured and its public HTTPS webhook route is verified
 
-After Source Collection runs, verify the dashboard and confirm that all six enabled sources have a recent successful check. Article Analysis should be activated only after the PostgreSQL and selected AI-provider nodes both show valid credentials.
+After Source Collection runs, verify the dashboard and confirm that every source you selected has a recent successful check. Unselected sources should remain disabled. Article Analysis should be activated only after the PostgreSQL and selected AI-provider nodes both show valid credentials. Skipping AI leaves collection available but does not produce AI analysis or AI-generated weekly reports. Preparation never activates these workflows for you.
