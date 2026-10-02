@@ -23,6 +23,22 @@ string Package(string name, string version, string content)
 }
 try
 {
+    const string auditPrefix = "CTI_MANAGED_AUDIT_RESULT:v1:";
+    var auditJson = "{\"schema\":1,\"drafts\":true,\"database\":true,\"errorRouting\":true,\"ai\":true,\"telegram\":null,\"ready\":true}";
+    Check(ReadinessResult.TryRead(0, auditPrefix + auditJson + "\r\n", true, false, out var auditResult) && auditResult!.Ready, "readiness result accepts exact selected schema");
+    Check(auditResult!.Description().Contains("not a live") && auditResult.Description().Contains("No tasks were enabled"), "readiness explanation does not promise live service or activation");
+    foreach (var bad in new[] { "", auditPrefix + auditJson + "extra", auditPrefix + auditJson.Replace("\"schema\":1", "\"schema\":2"), auditPrefix + auditJson.Replace("\"database\":true", "\"database\":false"), auditPrefix + auditJson.Replace("\"ai\":true", "\"ai\":null"), auditPrefix + auditJson.Replace("\"telegram\":null", "\"telegram\":true"), auditPrefix + auditJson.Replace("\"schema\":1", "\"schema\":1,\"secret\":\"hidden\""), auditPrefix + auditJson.Replace("\"schema\":1", "\"schema\":1,\"schema\":1"), new string('x', 1025) })
+        Check(!ReadinessResult.TryRead(0, bad, true, false, out _), "malformed inconsistent or extra readiness data refused");
+    Check(!ReadinessResult.TryRead(1, auditPrefix + auditJson, true, false, out _), "audit process failure cannot claim ready");
+    Check(ReadinessResult.TryRead(0, auditPrefix + auditJson.Replace("\"database\":true", "\"database\":false").Replace("\"ready\":true", "\"ready\":false"), true, false, out var incomplete) && !incomplete!.Ready, "valid not-ready result retained");
+    Check(TelegramConnection.ValidToken("12345:" + new string('a', 20)) && TelegramConnection.ValidToken(new string('9', 20) + ":" + new string('_', 128)), "Telegram token bounds accepted");
+    foreach (var token in new[] { "", "1234:" + new string('a', 20), "12345:" + new string('a', 19), "12345:" + new string('a', 129), "12345:" + new string('a', 20) + "\n", "12345:" + new string('a', 20) + " ", "12345:" + new string('ş', 20) })
+        Check(!TelegramConnection.ValidToken(token), "invalid Telegram token refused");
+    Check(TelegramConnection.ValidPrivateChat("12345") && TelegramConnection.ValidPrivateChat(new string('9', 20)), "private Telegram ID bounds accepted");
+    foreach (var id in new[] { "", "1234", new string('9', 21), "-123456789", "@username", "12345\n", "１２３４５" })
+        Check(!TelegramConnection.ValidPrivateChat(id), "invalid or group Telegram ID refused");
+    Check(TelegramConnection.Prepared(0, "CTI_MANAGED_TELEGRAM_RESULT:v1:prepared\r\n"), "Telegram exact success accepted");
+    Check(!TelegramConnection.Prepared(1, "CTI_MANAGED_TELEGRAM_RESULT:v1:prepared") && !TelegramConnection.Prepared(0, "CTI_MANAGED_TELEGRAM_RESULT:v1:prepared\nextra") && !TelegramConnection.Prepared(0, "prepared"), "Telegram failed or ambiguous result refused");
     Check(AiConnection.ValidKey(new string('a', 20)) && AiConnection.ValidKey(new string('a', 512)), "AI key bounds accepted");
     foreach (var key in new[] { "", new string('a', 19), new string('a', 513), "synthetic key contains space", "synthetic-key-with\nnewline", "synthetic-key-with-ş" })
         Check(!AiConnection.ValidKey(key), "invalid AI key format refused");

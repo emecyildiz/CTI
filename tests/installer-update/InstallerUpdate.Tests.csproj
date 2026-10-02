@@ -7,6 +7,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../installer/windows/AiConnection.cs" Link="AiConnection.cs" />
+    <Compile Include="../../installer/windows/TelegramConnection.cs" Link="TelegramConnection.cs" />
+    <Compile Include="../../installer/windows/ReadinessResult.cs" Link="ReadinessResult.cs" />
     <Compile Include="../../installer/windows/SetupOutcome.cs" Link="SetupOutcome.cs" />
     <Compile Include="../../installer/windows/RequirementGuidance.cs" Link="RequirementGuidance.cs" />
     <Compile Include="../../installer/windows/ManagedConnectionSettings.cs" Link="ManagedConnectionSettings.cs" />

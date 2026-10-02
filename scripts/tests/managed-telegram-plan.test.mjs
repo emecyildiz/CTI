@@ -55,7 +55,7 @@ for (const mutate of [
   w=>w.find(x=>x.name==='n8n Workflow Error Alerts').nodes[0].parameters={injected:true},
   w=>w.find(x=>x.name==='CTI Telegram Query').nodes[0].credentials={telegramApi:{id:'foreign',name:'foreign'}}
 ]) { const changed=structuredClone(bootstrap.workflows); mutate(changed); assert.throws(()=>makeTelegramPlan(templates,changed,bootstrap.credentials,config)); }
-for (const bad of [undefined,{}, {...config,chatId:'-100123456789'}, {...config,chatId:'1234'}, {...config,chatId:"12345';return [];"}, {...config,botToken:'invalid'}, {...config,botToken:config.botToken+'\n'}])
+for (const bad of [undefined,{}, {...config,chatId:'-100123456789'}, {...config,chatId:'1234'}, {...config,chatId:'12345\n'}, {...config,chatId:"12345';return [];"}, {...config,botToken:'invalid'}, {...config,botToken:config.botToken+'\n'}])
   assert.throws(()=>makeTelegramPlan(templates,bootstrap.workflows,bootstrap.credentials,bad));
 assert.throws(()=>makeTelegramPlan(templates,bootstrap.workflows,[plan.credential,plan.credential],config));
 assert.throws(()=>makeTelegramPlan(templates,bootstrap.workflows,[{...plan.credential,type:'unexpected'}],config));

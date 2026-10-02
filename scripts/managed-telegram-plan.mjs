@@ -13,7 +13,7 @@ function canonical(value) {
   return value;
 }
 const equal = (a,b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
-function normalizeNode(node, workflowName) {
+export function normalizeTelegramNode(node, workflowName) {
   const copy = structuredClone(node);
   delete copy.credentials;
   if (workflowName === 'CTI Telegram Query' && node.name === guardName) {
@@ -35,8 +35,8 @@ function normalizeNode(node, workflowName) {
 
 // Pure planning: reviewed inactive drafts only. No provider/network calls or mutation.
 export function makeTelegramPlan(templates, workflows, credentials, { botToken, chatId } = {}) {
-  if (typeof botToken !== 'string' || !/^[0-9]{5,20}:[A-Za-z0-9_-]{20,128}$/.test(botToken) ||
-      typeof chatId !== 'string' || !/^[0-9]{5,20}$/.test(chatId)) throw new Error('Invalid private Telegram configuration.');
+  if (typeof botToken !== 'string' || !/^[0-9]{5,20}:[A-Za-z0-9_-]{20,128}(?![\s\S])/.test(botToken) ||
+      typeof chatId !== 'string' || !/^[0-9]{5,20}(?![\s\S])/.test(chatId)) throw new Error('Invalid private Telegram configuration.');
   if (!Array.isArray(templates) || templates.length !== 8 || new Set(templates.map(w=>w.name)).size !== 8 ||
       !Array.isArray(workflows) || workflows.length !== 8 || new Set(workflows.map(w=>w.name)).size !== 8 ||
       new Set(workflows.map(w=>w.id)).size !== 8 || workflows.some(w=>!templates.some(t=>t.name===w.name) ||
@@ -66,7 +66,7 @@ export function makeTelegramPlan(templates, workflows, credentials, { botToken, 
     }
     for (const node of current.nodes) {
       const reviewed = expected.nodes.find(n=>n.id===node.id);
-      if (!reviewed || !equal(normalizeNode(node,name), normalizeNode(reviewed,name))) throw new Error('Modified Telegram node refused.');
+      if (!reviewed || !equal(normalizeTelegramNode(node,name), normalizeTelegramNode(reviewed,name))) throw new Error('Modified Telegram node refused.');
       if (types.has(node.type) && node.credentials &&
           (!matching.length || !equal(node.credentials,{telegramApi:{id,name:credentialName}}))) throw new Error('Unrecognized Telegram credential binding.');
     }

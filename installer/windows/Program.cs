@@ -41,6 +41,8 @@ internal sealed class InstallerForm : Form
     private readonly Button openSetupButton = new();
     private readonly Button openN8nButton = new();
     private readonly Button connectAiButton = new() { Text = "Connect AI", AutoSize = true, Visible = false };
+    private readonly Button connectTelegramButton = new() { Text = "Connect Telegram (optional)", AutoSize = true, Visible = false };
+    private readonly Button readinessButton = new() { Text = "Check setup", AutoSize = true, Visible = false };
     private readonly NumericUpDown dashboardPort = new() { Minimum = 1, Maximum = 65535, Value = 8080, Width = 85 };
     private readonly NumericUpDown n8nPort = new() { Minimum = 1, Maximum = 65535, Value = 5678, Width = 85 };
     private readonly ComboBox managementAction = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210 };
@@ -313,6 +315,10 @@ internal sealed class InstallerForm : Form
         panel.Controls.Add(openN8nButton);
         connectAiButton.Click += async (_, _) => await ConnectAiAsync();
         panel.Controls.Add(connectAiButton);
+        connectTelegramButton.Click += async (_, _) => await ConnectTelegramAsync();
+        panel.Controls.Add(connectTelegramButton);
+        readinessButton.Click += async (_, _) => await CheckReadinessAsync();
+        panel.Controls.Add(readinessButton);
         managementAction.Items.AddRange(["Stop (keep data)", "Remove services (keep data)", "Purge CTI data and package"]);
         managementAction.SelectedIndex = 0;
         manageButton.Click += async (_, _) => await ManageAsync();
@@ -374,6 +380,10 @@ internal sealed class InstallerForm : Form
             manageButton.Visible = managementAction.Visible = File.Exists(Path.Combine(destination, ".cti-owner.json"));
             connectAiButton.Visible = managedN8n.Checked && manageButton.Visible && CanOfferManagedAi(destination);
             connectAiButton.Enabled = connectAiButton.Visible && dockerReady && HasEmbeddedPayload();
+            connectTelegramButton.Visible = connectAiButton.Visible;
+            connectTelegramButton.Enabled = connectAiButton.Enabled;
+            readinessButton.Visible = connectAiButton.Visible;
+            readinessButton.Enabled = connectAiButton.Enabled;
             managedN8n.Enabled = existingN8n.Enabled = !hasConfig;
             installButton.Enabled = dockerReady && HasEmbeddedPayload();
         }
@@ -383,6 +393,8 @@ internal sealed class InstallerForm : Form
             installationStatus.ForeColor = Color.FromArgb(190, 45, 45);
             installButton.Enabled = false;
             connectAiButton.Enabled = false;
+            connectTelegramButton.Enabled = false;
+            readinessButton.Enabled = false;
         }
     }
 
@@ -404,7 +416,7 @@ internal sealed class InstallerForm : Form
             input = JsonSerializer.Serialize(new { aiKey = dialog.TakeKey() });
             var result = await RunProcessAsync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(package, "scripts", "managed-ai-connect.ps1"), "-InstallationPath", destination], package, false, TimeSpan.FromMinutes(8), input);
             if (!AiConnection.Prepared(result.ExitCode, result.Output)) throw new InvalidOperationException();
-            activity.Text = "AI key saved and two AI tasks connected. The provider has not been tested; all tasks remain disabled. Continue the AI profile and final review in your browser.";
+            activity.Text = "AI key saved and two AI tasks connected. The provider has not been tested; all tasks remain disabled. Use Check setup here, and review sources in the browser.";
             AppendLog("Managed AI connection prepared. No API key was logged and no tasks were activated.");
         }
         catch
@@ -417,6 +429,71 @@ internal sealed class InstallerForm : Form
             input = null;
             TryDeleteOwnedTemporaryDirectory(temporary);
             SetBusy(false); SetInputsEnabled(true); RefreshInstallAction();
+        }
+    }
+
+    private async Task ConnectTelegramAsync()
+    {
+        if (operationRunning) return;
+        using var dialog = new TelegramDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var temporary = Path.Combine(Path.GetTempPath(), $"cti-installer-{Guid.NewGuid():N}");
+        string? input = null;
+        try
+        {
+            var destination = ValidateDestination(installPath.Text);
+            SetBusy(true); SetInputsEnabled(false);
+            activity.Text = "Checking installation ownership and preparing Telegram. No messages will be sent and no tasks will be started.";
+            Directory.CreateDirectory(temporary);
+            var package = ExtractPayload(temporary);
+            var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+            input = JsonSerializer.Serialize(new { botToken = dialog.TakeToken(), chatId = dialog.PrivateChatId });
+            var result = await RunProcessAsync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(package, "scripts", "managed-telegram-connect.ps1"), "-InstallationPath", destination], package, false, TimeSpan.FromMinutes(8), input);
+            if (!TelegramConnection.Prepared(result.ExitCode, result.Output)) throw new InvalidOperationException();
+            activity.Text = "Telegram details saved and three tasks connected to your private chat. No message was sent; all tasks remain disabled. Incoming queries still require public HTTPS. Use Check setup here, and review sources in the browser.";
+            AppendLog("Managed Telegram connection prepared. No token or private user ID was logged; no tasks were activated.");
+        }
+        catch
+        {
+            activity.Text = "Telegram preparation needs attention. Keep the installation folder; a partial update may need review before retrying. No tasks were activated or messages sent.";
+            MessageBox.Show(this, activity.Text, "Telegram connection not completed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            input = null; TryDeleteOwnedTemporaryDirectory(temporary);
+            SetBusy(false); SetInputsEnabled(true); RefreshInstallAction();
+        }
+    }
+
+    private async Task CheckReadinessAsync()
+    {
+        if (operationRunning) return;
+        using var dialog = new ReadinessDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var temporary = Path.Combine(Path.GetTempPath(), $"cti-installer-{Guid.NewGuid():N}");
+        try
+        {
+            var destination = ValidateDestination(installPath.Text);
+            SetBusy(true); SetInputsEnabled(false);
+            activity.Text = "Checking the saved connections in your managed automation service. No tasks or credentials will be changed.";
+            Directory.CreateDirectory(temporary);
+            var package = ExtractPayload(temporary);
+            var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+            var input = JsonSerializer.Serialize(new { includeAi = dialog.IncludeAi, includeTelegram = dialog.IncludeTelegram });
+            var process = await RunProcessAsync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(package, "scripts", "managed-readiness.ps1"), "-InstallationPath", destination], package, false, TimeSpan.FromMinutes(10), input);
+            if (!ReadinessResult.TryRead(process.ExitCode, process.Output, dialog.IncludeAi, dialog.IncludeTelegram, out var result)) throw new InvalidOperationException();
+            activity.Text = result!.Ready ? "Selected connections are prepared. This is not a live connection test; collection is still disabled." : "Preparation needs attention. Review the summary and finish the missing setup steps.";
+            AppendLog("Managed preparation check completed. No tasks, credentials or messages were changed.");
+            MessageBox.Show(this, result.Description(), "CTI preparation check", MessageBoxButtons.OK, result.Ready ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+        catch
+        {
+            activity.Text = "The preparation check could not finish. Make sure your automation service is running. Keep the installation folder and review interrupted preparation before retrying.";
+            MessageBox.Show(this, activity.Text, "Check setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            TryDeleteOwnedTemporaryDirectory(temporary); SetBusy(false); SetInputsEnabled(true); RefreshInstallAction();
         }
     }
 
@@ -813,6 +890,8 @@ internal sealed class InstallerForm : Form
         manageButton.Enabled = !busy;
         managementAction.Enabled = !busy;
         if (busy) connectAiButton.Enabled = false;
+        if (busy) connectTelegramButton.Enabled = false;
+        if (busy) readinessButton.Enabled = false;
         if (busy) installButton.Enabled = false;
     }
 

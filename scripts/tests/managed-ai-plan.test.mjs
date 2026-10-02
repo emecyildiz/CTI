@@ -23,6 +23,7 @@ assert.equal(makeAiPlan(templates,connected,[...bootstrap.credentials,plan.crede
 for(const mutation of [
   w=>w[0].active=true,
   w=>w[0].activeVersionId='published',
+  w=>w[0].activeVersion={id:'published'},
   w=>w[0].isArchived=true,
   w=>w[0].nodes[0].parameters={injected:true},
   w=>w[0].nodes[0].disabled=true,
@@ -34,4 +35,5 @@ for(const mutation of [
 assert.throws(()=>makeAiPlan(templates,bootstrap.workflows,[{id:'reserved',name:plan.credential.name,type:'unexpected'}],key));
 assert.throws(()=>makeAiPlan(templates,bootstrap.workflows,[plan.credential,plan.credential],key));
 assert.throws(()=>makeAiPlan(templates,bootstrap.workflows,bootstrap.credentials,'bad\nkey'));
+assert.throws(()=>makeAiPlan(templates,bootstrap.workflows,bootstrap.credentials,key+'\n'));
 console.log('PASS: managed AI plan, two-node scope, preserved database/settings, stable credential and modified/active refusal.');

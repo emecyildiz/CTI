@@ -1,5 +1,8 @@
 # 0.1.0-rc.10 — Setup recovery and guided configuration
 
+- Unreleased Windows source: fresh managed database bootstrap, keyless **Connect AI**, **Connect Telegram (optional)** and **Check setup** dialogs. Trusted embedded ownership/pinned-image checks precede local CLI access; inactive reviewed drafts and unrelated data are preserved. No automatic activation, provider calls, or Telegram messages.
+- Add a read-only encrypted-export preparation audit with selected optional connections, all eight reviewed graphs, database/error/AI/private-Telegram binding checks, shared exclusive lock and consistent-snapshot refusal. Preparation is not presented as a live connection or public-webhook test.
+- Tighten trailing-newline input rejection and published-version safety checks. Native dialog/DPI and released-EXE acceptance remain pending; published rc.9 is unchanged.
 - Fix the setup Referrer-Policy / native form Origin conflict while preserving mandatory Origin, CSRF and local Host checks. Rejected setup requests now explain that no changes were saved and how to retry safely.
 - Fresh Windows installations offer Continue setup on the selected port. Repair/update keeps Open dashboard and also provides Open setup. PowerShell prints the setup URL separately.
 - Add a next-step guide and section links. Saved AI profiles and source selections are not presented as verified credentials or activated workflows. Non-bundled AI providers still require a compatible workflow adapter.
@@ -8,7 +11,7 @@
 
 Validation: dashboard boundary/guide tests, 52 installer assertions, Windows mock setup flow and warning-free Windows build passed. Real PostgreSQL acceptance confirmed AI/source persistence, rejected-request state preservation and unavailable-n8n HTTP 503. Native-browser form policy behavior was separately verified using an isolated fixture. These do not replace graphical installer acceptance or successful real n8n credential/readiness validation.
 
-Existing configuration/data preservation and update consent rules remain unchanged. There is no automatic detection of completed setup, no full setup wizard and no new topic/source expansion in this candidate. The EXE remains unsigned; this is not stable-release approval.
+Existing configuration/data preservation and update consent rules remain unchanged. The browser has a guided five-step setup flow; source selection and manual/external-n8n configuration remain separate from the new Windows actions. There is no automatic activation or new topic/source expansion in this candidate. The EXE remains unsigned; this is not stable-release approval.
 
 # 0.1.0-rc.9 — Windows update and repair safety
 

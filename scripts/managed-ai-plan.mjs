@@ -12,10 +12,10 @@ function withoutCredentials(node) { const result=structuredClone(node); delete r
 
 // Pure, read-only planning. Inputs are reviewed templates and encrypted CLI exports.
 export function makeAiPlan(templates, workflows, credentials, aiKey) {
-  if (typeof aiKey !== 'string' || !/^[\x21-\x7e]{20,512}$/.test(aiKey)) throw new Error('Unsupported AI key format.');
+  if (typeof aiKey !== 'string' || !/^[\x21-\x7e]{20,512}(?![\s\S])/.test(aiKey)) throw new Error('Unsupported AI key format.');
   if (!Array.isArray(workflows) || workflows.length !== 8 || !Array.isArray(templates) || templates.length !== 8 ||
       new Set(workflows.map(w=>w.name)).size !== 8 || new Set(workflows.map(w=>w.id)).size !== 8 ||
-      workflows.some(w=>!templates.some(t=>t.name===w.name) || typeof w.id!=='string' || !/^[A-Za-z0-9_-]{1,64}$/.test(w.id) || w.active !== false || w.activeVersionId || w.isArchived))
+      workflows.some(w=>!templates.some(t=>t.name===w.name) || typeof w.id!=='string' || !/^[A-Za-z0-9_-]{1,64}$/.test(w.id) || w.active !== false || w.activeVersionId || w.activeVersion || w.isArchived))
     throw new Error('Installation is not the expected inactive package.');
   if (!Array.isArray(credentials)) throw new Error('Credential export unavailable.');
   const matching=credentials.filter(c=>c.name===credentialName);
