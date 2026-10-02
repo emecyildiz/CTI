@@ -51,6 +51,8 @@ jobs:
         run: dotnet build installer/windows/CtiInstaller.csproj --configuration Release --warnaserror
       - name: Installer update and repair boundaries
         run: dotnet run --project tests/installer-update/InstallerUpdate.Tests.csproj --configuration Release
+      - name: Windows dialog component layout and accessibility
+        run: dotnet run --project tests/installer-ui/InstallerUi.Tests.csproj --configuration Release
       - name: Combined Telegram HTTP boundaries without Docker
         shell: pwsh
         run: |
