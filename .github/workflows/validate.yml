@@ -69,4 +69,6 @@ jobs:
         run: |
           node scripts/tests/managed-bootstrap-plan.test.mjs
           node scripts/tests/managed-ai-plan.test.mjs
+          node scripts/tests/managed-telegram-plan.test.mjs
+          node scripts/tests/managed-telegram-connect.test.mjs
           node scripts/tests/managed-bootstrap-acceptance.mjs
