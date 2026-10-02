@@ -2,7 +2,7 @@
 
 Each release contains a ZIP archive, a Windows x64 installer, a Linux installer, their `.sha256` checksum files, and a JSON manifest. Verify the applicable checksum before extracting the ZIP or running either installer.
 
-Download matching assets from the [official releases page](https://github.com/emecyildiz/CTI/releases). Use the exact version in their filenames; unreleased source changes on `main` are not necessarily included in the latest published installer. The examples below use rc.9, not a promise that a newer candidate has been published.
+Download matching assets from the [official releases page](https://github.com/emecyildiz/CTI/releases). Use the exact version in their filenames; unreleased source changes on `main` are not necessarily included in the latest published installer. The examples below use rc.10. If its assets are not listed yet, use another published version with its matching documentation or wait for the candidate.
 
 A matching checksum detects corruption or a mismatch with the supplied checksum file. It does **not** authenticate the publisher if both files have been replaced by an attacker. Obtain both from the official repository; the Windows installer is currently not Authenticode-signed.
 
@@ -11,7 +11,7 @@ A matching checksum detects corruption or a mismatch with the supplied checksum 
 Place the ZIP and checksum file in the same directory:
 
 ```sh
-version=0.1.0-rc.9 # Replace with the downloaded release version.
+version=0.1.0-rc.10 # Replace with the downloaded release version.
 sha256sum -c "cti-self-hosted-$version.zip.sha256"
 ```
 
@@ -20,7 +20,7 @@ The command must report `OK`.
 ## Windows PowerShell
 
 ```powershell
-$version = '0.1.0-rc.9' # Replace with the downloaded release version.
+$version = '0.1.0-rc.10' # Replace with the downloaded release version.
 $file = "cti-self-hosted-$version.zip"
 $expected = (Get-Content -LiteralPath "$file.sha256").Split()[0]
 $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
@@ -32,7 +32,7 @@ The final result must be `True`. Do not continue when the checksum differs.
 ### Windows installer
 
 ```powershell
-$version = '0.1.0-rc.9' # Replace with the downloaded release version.
+$version = '0.1.0-rc.10' # Replace with the downloaded release version.
 $file = "CTI-Setup-$version-win-x64.exe"
 $expected = (Get-Content -LiteralPath "$file.sha256").Split()[0]
 $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
@@ -46,7 +46,7 @@ Maintainers can run a **trusted, locally built or verified official** installer 
 ### Linux installer
 
 ```sh
-version=0.1.0-rc.9 # Replace with the downloaded release version.
+version=0.1.0-rc.10 # Replace with the downloaded release version.
 sha256sum -c "CTI-Setup-$version-linux.sh.sha256"
 ```
 

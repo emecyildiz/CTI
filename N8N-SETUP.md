@@ -2,11 +2,11 @@
 
 All public workflow exports are deliberately disabled and contain no credential identifiers. Import them only once. Manual and external installations then map operator-owned credentials in the n8n editor.
 
-## New Windows managed installations (source implementation)
+## New Windows managed installations (rc.10 candidate)
 
 `setup.ps1` now prepares the private PostgreSQL credential and maps the eight CTI drafts automatically on a fresh installer-owned n8n instance. This step requires neither an n8n API key nor copying a database password. It uses the server CLI inside the owned container, verifies the encrypted credential record and disabled workflow bindings, and leaves every task disabled. The first human n8n owner account still needs to be created normally.
 
-These source changes are not yet released. Existing installations are not migrated, and external n8n and `setup.sh` keep their existing paths. Native dialog and released-EXE acceptance remain separate from the isolated synthetic-credential tests.
+These changes are included in the rc.10 test candidate, not older rc.9 EXEs. Existing installations are not migrated, and external n8n and `setup.sh` keep their existing paths. Physical monitor DPI and full released-EXE user acceptance remain separate from the isolated synthetic-credential tests.
 
 After a successful fresh bootstrap, the installer records a non-secret history flag and refreshes the dashboard. The setup page then explains the automatic database step and moves manual reconnection under advanced settings. This is historical information, not current credential validation; live n8n checks and the final readiness audit still apply. An existing installation without this record retains the manual connection form.
 
@@ -14,7 +14,7 @@ The Windows installer source includes **Connect AI** (Gemini API key), **Connect
 
 **Check setup** is a read-only structural preparation audit. Select whether AI and Telegram should be included. It reads encrypted exports, checks all eight reviewed disabled graphs, 31 PostgreSQL bindings, seven error routes, two AI bindings and five private Telegram bindings as selected, and detects edits during its snapshot. It does not decrypt credentials, test the stored passwords/keys, contact external services, or verify incoming HTTPS reachability. Its shared lock does not prevent manual n8n UI/API edits; avoid such edits during preparation/checks. Browser source selection and advanced manual setup remain separate.
 
-### Simple Windows setup path (unreleased source)
+### Simple Windows setup path (rc.10)
 
 Keep the matching CTI setup EXE open. Create the first n8n owner account, then use **Connect AI** only if you want AI summaries, **Open setup** to choose sources in the browser, **Connect Telegram (optional)** only if needed, and **Check setup** to inspect preparation. Reopening the same EXE and selecting the same installation folder restores these actions. No n8n API key is required for this managed path.
 

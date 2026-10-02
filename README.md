@@ -13,7 +13,7 @@ The guided setup can deploy a local n8n container automatically. An existing n8n
 
 ## Guided installation from a release
 
-The examples below target `0.1.0-rc.9`. If those assets are not yet listed in
+The examples below target the test prerelease `0.1.0-rc.10`. If those assets are not yet listed in
 GitHub Releases, use the latest published tag and its matching documentation;
 the `main` branch can contain unreleased preparation work.
 
@@ -31,9 +31,9 @@ Download `CTI-Setup-<version>-win-x64.exe` and its `.sha256` file from GitHub Re
 
 The installer runs as the current user and does not request administrator elevation. Docker Desktop may independently require privileges during its own installation. The EXE is currently unsigned, so Windows SmartScreen may show an unrecognized-app warning; verify the published SHA-256 checksum before running it.
 
-Unreleased Windows source simplifies the next steps for fresh managed installations: database preparation is automatic; **Connect AI**, **Connect Telegram (optional)**, and **Check setup** are in the setup app, while source selection is in the browser. AI and Telegram are optional. Browser manual forms remain available under advanced setup. The preparation check does not test real API keys or activate tasks. See [the managed setup guide](N8N-SETUP.md#simple-windows-setup-path-unreleased-source); the published rc.9 EXE does not yet include these changes.
+The rc.10 Windows candidate simplifies the next steps for fresh managed installations: database preparation is automatic; **Connect AI**, **Connect Telegram (optional)**, and **Check setup** are in the setup app, while source selection is in the browser. AI and Telegram are optional. Browser manual forms remain available under advanced setup. The preparation check does not test real API keys or activate tasks. See [the managed setup guide](N8N-SETUP.md#simple-windows-setup-path-rc10); older rc.9 EXEs do not include these changes.
 
-Testing the unreleased Windows candidate? Follow the [separate Windows acceptance checklist](WINDOWS-TEST-CHECKLIST.md) so a fresh managed test does not overwrite or remove your existing installation.
+Testing the Windows candidate? Follow the [separate Windows acceptance checklist](WINDOWS-TEST-CHECKLIST.md) so a fresh managed test does not overwrite or remove your existing installation.
 
 ### Windows ports and management (rc.8)
 
@@ -95,7 +95,7 @@ Headless regression tests: `dotnet run --project tests/installer-update/Installe
 On a Linux server, download the versioned terminal installer and its checksum from GitHub Releases:
 
 ```sh
-version=0.1.0-rc.9
+version=0.1.0-rc.10
 base="https://github.com/emecyildiz/CTI/releases/download/v$version"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh"
 curl -fsSLO "$base/CTI-Setup-$version-linux.sh.sha256"
@@ -111,13 +111,13 @@ During an interactive managed-n8n installation, Telegram query support is presen
 For a non-interactive managed-n8n installation using the default directory:
 
 ```sh
-./CTI-Setup-0.1.0-rc.9-linux.sh --non-interactive
+./CTI-Setup-0.1.0-rc.10-linux.sh --non-interactive
 ```
 
 For a non-interactive server installation where a public HTTPS route already exists:
 
 ```sh
-./CTI-Setup-0.1.0-rc.9-linux.sh \
+./CTI-Setup-0.1.0-rc.10-linux.sh \
   --non-interactive \
   --telegram-webhook-url https://hooks.example.com/
 ```
@@ -150,9 +150,9 @@ The guided installer:
 
 The user still creates the first local n8n owner account. The protected setup page can then select from the reviewed source catalog and create and map the operator-owned PostgreSQL, bundled Gemini, and optional Telegram credentials. Workflows are never activated automatically.
 
-The unreleased Windows installer source offers **Connect AI**, **Connect Telegram (optional)**, and **Check setup** for an installer-owned managed n8n service after a fresh automatic database bootstrap. These actions do not need an n8n API key. Enter your Gemini API key, or your Telegram bot token and numeric private user/chat ID, in the relevant small dialog. The embedded package verifies the installation record, Docker engine, container ownership and pinned n8n image before the stdin handoff. AI preparation updates only two reviewed inactive tasks; Telegram preparation updates three, preserving the private authorization guard and error routes. Secrets are stored encrypted by n8n, not in the installer log or host `.env`. Existing/manual or modified workflow installations can be refused; do not overwrite a partial operation to bypass a refusal.
+The rc.10 Windows installer offers **Connect AI**, **Connect Telegram (optional)**, and **Check setup** for an installer-owned managed n8n service after a fresh automatic database bootstrap. These actions do not need an n8n API key. Enter your Gemini API key, or your Telegram bot token and numeric private user/chat ID, in the relevant small dialog. The embedded package verifies the installation record, Docker engine, container ownership and pinned n8n image before the stdin handoff. AI preparation updates only two reviewed inactive tasks; Telegram preparation updates three, preserving the private authorization guard and error routes. Secrets are stored encrypted by n8n, not in the installer log or host `.env`. Existing/manual or modified workflow installations can be refused; do not overwrite a partial operation to bypass a refusal.
 
-**Check setup** reads encrypted credential metadata and workflow exports without changing the saved tasks or credentials. It checks the eight reviewed disabled graphs, 31 database bindings, error routes, and the selected optional AI/Telegram bindings. Its result is a preparation snapshot, **not** a live database/provider test or proof that a public HTTPS webhook is reachable. The helpers share an exclusive lock and refuse interrupted-operation markers; do not edit n8n during these operations. No helper activates tasks, registers a webhook, or sends messages. Native dialog/DPI and released-EXE acceptance are still pending; the published rc.9 package does not contain these unreleased actions. Browser source selection and the advanced/manual setup path remain available.
+**Check setup** reads encrypted credential metadata and workflow exports without changing the saved tasks or credentials. It checks the eight reviewed disabled graphs, 31 database bindings, error routes, and the selected optional AI/Telegram bindings. Its result is a preparation snapshot, **not** a live database/provider test or proof that a public HTTPS webhook is reachable. The helpers share an exclusive lock and refuse interrupted-operation markers; do not edit n8n during these operations. No helper activates tasks, registers a webhook, or sends messages. Physical monitor DPI, clean-machine and full released-EXE acceptance are still pending. Browser source selection and the advanced/manual setup path remain available.
 
 Published GitHub releases contain a versioned ZIP, its SHA-256 checksum, a JSON manifest, a self-contained Windows x64 installer, and a version-pinned Linux installer. Both installers have separate checksums. The release pipeline is triggered only by a matching version tag and builds every installation format from that exact tagged commit.
 

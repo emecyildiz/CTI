@@ -1,6 +1,6 @@
 # Windows candidate test checklist
 
-This is a user acceptance checklist for the **unreleased rc.10 candidate**. Use the candidate supplied by the maintainer, not the older published rc.9 EXE. Passing automated tests or **Check setup** does not replace these user checks. Do not enter secrets in screenshots or bug reports.
+This is a user acceptance checklist for the **rc.10 test prerelease**. Use its matching EXE from the [official release](https://github.com/emecyildiz/CTI/releases/tag/v0.1.0-rc.10), not an older rc.9 EXE. If the assets are not listed yet, wait for publication; do not substitute another version for this checklist. Passing automated tests or **Check setup** does not replace these user checks. Do not enter secrets in screenshots or bug reports.
 
 ## 1. Keep the existing installation safe
 
