@@ -14,6 +14,14 @@ The Windows installer source includes **Connect AI** (Gemini API key), **Connect
 
 **Check setup** is a read-only structural preparation audit. Select whether AI and Telegram should be included. It reads encrypted exports, checks all eight reviewed disabled graphs, 31 PostgreSQL bindings, seven error routes, two AI bindings and five private Telegram bindings as selected, and detects edits during its snapshot. It does not decrypt credentials, test the stored passwords/keys, contact external services, or verify incoming HTTPS reachability. Its shared lock does not prevent manual n8n UI/API edits; avoid such edits during preparation/checks. Browser source selection and advanced manual setup remain separate.
 
+### Simple Windows setup path (unreleased source)
+
+Keep the matching CTI setup EXE open. Create the first n8n owner account, then use **Connect AI** only if you want AI summaries, **Open setup** to choose sources in the browser, **Connect Telegram (optional)** only if needed, and **Check setup** to inspect preparation. Reopening the same EXE and selecting the same installation folder restores these actions. No n8n API key is required for this managed path.
+
+The browser now shows these Windows actions as the primary connection instructions and keeps credential forms under advanced manual setup. AI provider/model metadata is also advanced: saving it does not change the actual n8n model node or test a key. The browser cannot see the native preparation result and never marks that check complete automatically. After preparation, deliberately review and activate only the tasks you need in n8n; incoming Telegram queries additionally require a verified public HTTPS route.
+
+The separate non-secret `CTI_WINDOWS_GUIDED_CONNECTIONS=v1` record advertises the current Windows setup UI. It requires an installer-owned managed instance and recorded database bootstrap; it is not proof that credentials still work. The installer supplies `-GuidedConnections` only for managed n8n, validates its bundled helpers, and does not promote old/unknown or external installations into this path. Such installations retain their manual forms. Do not edit these records to bypass a refusal.
+
 The bootstrap refuses populated instances. A pending marker blocks automatic retry after an interrupted import; preserve that installation for diagnosis rather than deleting its data or blindly importing again. Secrets travel through stdin and temporary memory-backed files, not process arguments or terminal logs. Local Docker access remains administrative access, not a security boundary against the host administrator.
 
 Before activation, use the protected dashboard `/setup` page to choose at least one source from the bundled reviewed catalog. This action changes only the enabled state of known source definitions; it does not accept URLs or alter their host allowlists, selectors, or trust scores.

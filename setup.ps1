@@ -2,6 +2,7 @@
 param(
     [switch]$UseExistingN8n,
     [switch]$SkipWorkflowImport,
+    [switch]$GuidedConnections,
     [ValidatePattern('^https://')]
     [string]$TelegramWebhookUrl,
     [ValidateRange(0, 16)]
@@ -17,6 +18,14 @@ Set-Location -LiteralPath $PSScriptRoot
 foreach ($name in @('.env', '.cti-owner.json', 'compose.yml')) {
     $path = Join-Path $PSScriptRoot $name
     if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Unsafe linked configuration file: $name" }
+}
+if ($GuidedConnections) {
+    # Capability hint only. Never accept caller-selected helper paths.
+    [void](Assert-CtiDirectory (Join-Path $PSScriptRoot 'scripts'))
+    foreach ($name in @('managed-connection-host.ps1','managed-ai-connect.ps1','managed-ai-connect.mjs','managed-ai-plan.mjs','managed-telegram-connect.ps1','managed-telegram-connect.mjs','managed-telegram-plan.mjs','managed-readiness.ps1','managed-readiness.mjs','managed-readiness-plan.mjs')) {
+        $helper = Get-Item -LiteralPath (Join-Path $PSScriptRoot "scripts/$name") -Force
+        if ($helper.PSIsContainer -or ($helper.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsupported guided-connection package.' }
+    }
 }
 
 function Write-Step([string]$Message) {
@@ -236,6 +245,7 @@ $env:CTI_DATABASE_BOOTSTRAP_RECORDED = if ($managedN8n -and $environmentValues['
 foreach ($key in $environmentValues.Keys) {
     if ($key -cmatch '^(CTI_|N8N_|POSTGRES_)[A-Z0-9_]+$') { [Environment]::SetEnvironmentVariable($key, [string]$environmentValues[$key], 'Process') }
 }
+$env:CTI_WINDOWS_GUIDED_CONNECTIONS = if ($managedN8n -and $environmentValues['CTI_DATABASE_BOOTSTRAP_RECORDED'] -ceq 'true' -and $environmentValues['CTI_WINDOWS_GUIDED_CONNECTIONS'] -ceq 'v1') { 'v1' } else { 'none' }
 $env:COMPOSE_PROJECT_NAME = $environmentValues['CTI_COMPOSE_PROJECT_NAME']
 $composeArguments = @('compose')
 if ($managedN8n) { $composeArguments += @('--profile', 'managed-n8n') }
@@ -273,6 +283,7 @@ if (-not $dashboardReady) {
 }
 
 $connectionOutcome = 'external'
+$dashboardNeedsRefresh = $false
 if ($managedN8n) {
     $n8nContainer = if ($environmentValues['N8N_CONTAINER']) { $environmentValues['N8N_CONTAINER'] } else { 'cti-n8n' }
     $connectionOutcome = 'skipped'
@@ -298,7 +309,7 @@ if ($managedN8n) {
             # Historical UI hint only; no credential, API key or readiness claim.
             Set-EnvironmentValue 'CTI_DATABASE_BOOTSTRAP_RECORDED' 'true'
             $env:CTI_DATABASE_BOOTSTRAP_RECORDED = 'true'
-            Invoke-Docker ($composeArguments + @('up', '-d', '--no-deps', '--no-build', '--wait', '--wait-timeout', '60', 'cti-dashboard'))
+            $dashboardNeedsRefresh = $true
             $connectionOutcome = 'prepared'
         } elseif ($LASTEXITCODE -ne 0) {
             Write-Step 'Importing the CTI workflows in disabled state'
@@ -311,6 +322,16 @@ if ($managedN8n) {
             Write-Host 'CTI workflows were already imported; duplicate import skipped.'
             $connectionOutcome = 'preserved'
         }
+    }
+    if ($GuidedConnections -and $owner -and $owner.managed_n8n -and $env:CTI_DATABASE_BOOTSTRAP_RECORDED -ceq 'true') {
+        if ($environmentValues['CTI_WINDOWS_GUIDED_CONNECTIONS'] -cne 'v1') {
+            Set-EnvironmentValue 'CTI_WINDOWS_GUIDED_CONNECTIONS' 'v1'
+            $dashboardNeedsRefresh = $true
+        }
+        $env:CTI_WINDOWS_GUIDED_CONNECTIONS = 'v1'
+    }
+    if ($dashboardNeedsRefresh) {
+        Invoke-Docker ($composeArguments + @('up', '-d', '--no-deps', '--no-build', '--wait', '--wait-timeout', '60', 'cti-dashboard'))
     }
 }
 

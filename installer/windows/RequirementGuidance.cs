@@ -14,6 +14,6 @@ internal static class RequirementGuidance
     };
 
     internal static string NextStep(bool managed) => managed
-        ? "Services installed. Next: create your local n8n account if this is a new installation, then open setup. Configure sources and optional AI/Telegram there. Installation does not activate collection; existing tasks keep their current state."
+        ? "Services installed. Next: create your local n8n account if this is a new installation. Keep this window open: use Connect AI and optional Connect Telegram here, choose news sources with Open setup, then use Check setup here. These easy actions require the recorded managed database bootstrap; older/manual installations keep the browser forms. Installation does not activate collection; existing tasks keep their current state."
         : "CTI installed. Next: open setup and connect your existing n8n service. External n8n was not changed. Installation does not activate collection; existing tasks keep their current state.";
 }

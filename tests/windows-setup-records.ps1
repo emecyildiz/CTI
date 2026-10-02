@@ -1,10 +1,10 @@
 #Requires -Version 7.0
 [CmdletBinding()]
-param([switch]$Run)
+param([switch]$Run,[switch]$Guided,[switch]$Preview)
 $ErrorActionPreference = 'Stop'
 if (-not $Run) { throw 'Use -Run for isolated Docker PostgreSQL and local dashboard acceptance.' }
 $repo = Split-Path -Parent $PSScriptRoot
-if ((& docker info --format '{{.OperatingSystem}}') -ne 'Docker Desktop') { throw 'Local Docker Desktop required.' }
+if ((& docker context show) -ne 'desktop-linux' -or (& docker info --format '{{.OperatingSystem}}') -notin @('Docker Desktop','Docker Desktop (containerized)')) { throw 'Local Docker Desktop required.' }
 $name = 'cti-records-test-' + [Guid]::NewGuid().ToString('N')
 $password = [Guid]::NewGuid().ToString('N')
 $process = $null
@@ -58,6 +58,9 @@ try {
     $start.Environment['CTI_AUTH_MODE'] = 'local'
     $start.Environment['ConnectionStrings__Cti'] = "Host=127.0.0.1;Port=$dbPort;Database=cti;Username=cti_dashboard;Password=$password"
     $start.Environment['CTI_N8N_API_URL'] = "http://127.0.0.1:$absentPort/api/v1"
+    $start.Environment['CTI_MANAGED_N8N'] = if ($Guided) { 'true' } else { 'false' }
+    $start.Environment['CTI_DATABASE_BOOTSTRAP_RECORDED'] = if ($Guided) { 'true' } else { 'false' }
+    $start.Environment['CTI_WINDOWS_GUIDED_CONNECTIONS'] = if ($Guided) { 'v1' } else { 'none' }
     $process = [Diagnostics.Process]::Start($start)
     $handler = [Net.Http.HttpClientHandler]::new()
     $handler.AllowAutoRedirect = $false
@@ -74,7 +77,20 @@ try {
     $page=$client.GetAsync("$base/setup").GetAwaiter().GetResult()
     $html=$page.Content.ReadAsStringAsync().GetAwaiter().GetResult()
     Check ($page.IsSuccessStatusCode -and $html.Contains('Connect n8n first')) 'setup renders incomplete n8n guidance'
+    foreach($action in @('ai','telegram','review')) {
+        Check ($html.Contains("data-installer-action=`"$action`"") -eq [bool]$Guided) "installer action gate: $action"
+        Check ($html.Contains("data-manual-fallback=`"$action`"") -eq [bool]$Guided) "manual fallback presentation gate: $action"
+    }
+    if($Guided) {
+        Check ($html.Contains('data-guided-profile="advanced"')) 'AI metadata kept under advanced options'
+        Check ($html.Contains('This browser cannot see the app')) 'native result is not marked complete in browser'
+        Check (-not $html.Contains('<script') -and -not $html.Contains('href="cti:')) 'no automatic process launcher or client script introduced'
+    }
     Check (($page.Headers.GetValues('Referrer-Policy') -join '') -eq 'same-origin') 'setup referrer policy'
+    if ($Preview) {
+        Write-Host "Isolated browser preview: $base/setup?step=ai"
+        [void](Read-Host 'Press Enter after browser review to finish acceptance and clean the fixture')
+    }
     $token=[regex]::Match($html,'name="_csrf" value="([^"]+)"').Groups[1].Value
     Check ($token.Length -eq 43) 'CSRF form and session established'
     $page.Dispose()

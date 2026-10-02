@@ -640,6 +640,7 @@ internal sealed class InstallerForm : Form
             var setupScript = Path.Combine(destination, "setup.ps1");
             var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
             var arguments = new List<string> { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", setupScript };
+            if (managedN8n.Checked) arguments.Add("-GuidedConnections");
             arguments.AddRange(["-DashboardPort", dashboardPort.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
             if (managedN8n.Checked) arguments.AddRange(["-N8nPort", n8nPort.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
             if (existingN8n.Checked)

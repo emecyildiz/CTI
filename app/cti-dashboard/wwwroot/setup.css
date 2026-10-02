@@ -73,6 +73,19 @@
   color: var(--muted);
 }
 
+.installer-action {
+  margin: 1rem 0;
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 0.5rem;
+  background: #14211b;
+  overflow-wrap: anywhere;
+}
+
+.installer-action p { margin: 0.7rem 0 0; max-width: 70ch; }
+.installer-action strong { display: block; }
+
 .setup-steps {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

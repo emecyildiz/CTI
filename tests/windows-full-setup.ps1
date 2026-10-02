@@ -6,7 +6,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 . (Join-Path $repo 'scripts/windows-lifecycle.ps1')
 if ((& docker context show) -ne 'desktop-linux') { throw 'Local Docker Desktop is required.' }
 $engine = (& docker info --format '{{.OperatingSystem}}').Trim()
-if ($LASTEXITCODE -ne 0 -or $engine -ne 'Docker Desktop') { throw 'Local Docker Desktop is unavailable.' }
+if ($LASTEXITCODE -ne 0 -or $engine -notin @('Docker Desktop','Docker Desktop (containerized)')) { throw 'Local Docker Desktop is unavailable.' }
 $root = Join-Path ([IO.Path]::GetTempPath()) ('cti-full-setup-' + [Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 $owner = $null
@@ -47,7 +47,7 @@ try {
         Copy-Item -LiteralPath $source -Destination $target
     }
     $d=Port; do {$n=Port} while($n -eq $d)
-    Setup @('-DashboardPort',[string]$d,'-N8nPort',[string]$n)
+    Setup @('-DashboardPort',[string]$d,'-N8nPort',[string]$n,'-GuidedConnections')
     $owner=Read-CtiOwner $root
     Check ((Sql 'SELECT max(version) FROM cti.schema_versions;').Trim() -eq '29') 'schema migrated to version 29'
     Check ((Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$d/health/ready").StatusCode -eq 200) 'dashboard readiness on custom port'
@@ -56,9 +56,16 @@ try {
     $receipt = (& docker exec ($owner.project+'-n8n') cat /home/node/.n8n/.cti-managed-bootstrap-v1) | ConvertFrom-Json
     Check ($receipt.database -and -not $receipt.active -and $receipt.workflows -eq 8) 'managed database binding prepared without an API key'
     Check ([bool](Select-String -LiteralPath (Join-Path $root '.env') -Pattern '^CTI_DATABASE_BOOTSTRAP_RECORDED=true$')) 'installer stores non-secret database history'
+    Check ([bool](Select-String -LiteralPath (Join-Path $root '.env') -Pattern '^CTI_WINDOWS_GUIDED_CONNECTIONS=v1$')) 'installer records separate Windows guided capability'
     $setupPage = (Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$d/setup?step=connection").Content
     Check ($setupPage.Contains('Your installer recorded automatic database connection setup.')) 'dashboard displays managed bootstrap history'
     Check ($setupPage.Contains('Advanced: reconnect the database if needed')) 'automatic setup moves password form into advanced section'
+    foreach($action in @('ai','telegram','review')) {
+        Check ($setupPage.Contains("data-installer-action=`"$action`"")) "dashboard receives easy Windows action: $action"
+        Check ($setupPage.Contains("data-manual-fallback=`"$action`"")) "advanced manual fallback retained: $action"
+    }
+    Check ($setupPage.Contains('data-guided-profile="advanced"')) 'provider metadata is advanced in keyless setup'
+    Check ($setupPage.Contains('This browser cannot see the app')) 'browser does not infer successful native readiness'
     [void](Sql "CREATE TABLE public.cti_setup_probe(value text); INSERT INTO public.cti_setup_probe VALUES ('preserved');")
     $envHash=(Get-FileHash -LiteralPath (Join-Path $root '.env')).Hash
     Setup @()

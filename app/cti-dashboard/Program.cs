@@ -186,7 +186,8 @@ app.MapGet("/setup", async (
             csrfToken,
             result,
             GetAuthenticatedIdentity(context), step,
-            SetupGuide.HasInstallerDatabaseRecord(authenticationMode, builder.Configuration["CTI_MANAGED_N8N"], builder.Configuration["CTI_DATABASE_BOOTSTRAP_RECORDED"])),
+            SetupGuide.HasInstallerDatabaseRecord(authenticationMode, builder.Configuration["CTI_MANAGED_N8N"], builder.Configuration["CTI_DATABASE_BOOTSTRAP_RECORDED"]),
+            SetupGuide.HasWindowsGuidedConnections(authenticationMode, builder.Configuration["CTI_MANAGED_N8N"], builder.Configuration["CTI_DATABASE_BOOTSTRAP_RECORDED"], builder.Configuration["CTI_WINDOWS_GUIDED_CONNECTIONS"])),
         "text/html; charset=utf-8");
 });
 
@@ -2898,7 +2899,8 @@ internal static class HtmlPages
         string? result,
         string email,
         string? requestedStep = null,
-        bool installerDatabasePrepared = false)
+        bool installerDatabasePrepared = false,
+        bool windowsGuided = false)
     {
         var sourceHealthClass = status.FailingSourceCount > 0 ? "warning" : "ready";
         var sourceHealthLabel = status.FailingSourceCount > 0
@@ -2986,7 +2988,7 @@ internal static class HtmlPages
                                   string.Equals(aiProvider.ProviderKey, "google_gemini", StringComparison.Ordinal) &&
                                   string.Equals(aiProvider.AdapterKey, "google_gemini", StringComparison.Ordinal);
         var nextStep = SetupGuide.Next(handoffReady, aiProvider.ProfileDefined,
-            aiProvider.AdapterStatus == "bundled", status.EnabledSourceCount, installerDatabasePrepared);
+            aiProvider.AdapterStatus == "bundled", status.EnabledSourceCount, installerDatabasePrepared, windowsGuided);
         var credentialForm = credentialFormReady
             ? $$"""
                 <form class="credential-form" method="post" action="/setup/credential-handoff" autocomplete="off">
@@ -3065,6 +3067,9 @@ internal static class HtmlPages
             : "<div class=\"credential-unavailable\"><strong>Activation readiness audit is locked.</strong><p>Complete the n8n boundary check first.</p></div>";
 
         var currentStep = SetupGuide.SelectStep(requestedStep, result);
+        var aiConnectionPanel = SetupGuide.ConnectionPanel("ai", credentialForm, windowsGuided);
+        var telegramConnectionPanel = SetupGuide.ConnectionPanel("telegram", telegramCredentialForm, windowsGuided);
+        var reviewConnectionPanel = SetupGuide.ConnectionPanel("review", readinessForm, windowsGuided);
         var stepIndex = Array.IndexOf(SetupGuide.Steps, currentStep);
         string Hidden(string stepName) => currentStep == stepName ? "" : "hidden";
         var navigation = string.Join("", SetupGuide.Steps.Select((name, index) =>
@@ -3073,7 +3078,7 @@ internal static class HtmlPages
         var followingStep = stepIndex < SetupGuide.Steps.Length - 1 ? $"<a class=\"primary-link\" href=\"/setup?step={SetupGuide.Steps[stepIndex + 1]}\">{(currentStep == "telegram" ? "Continue / skip Telegram" : "Continue")} →</a>" : "";
         return Layout("Guided setup", email, $$"""
             <div class="setup-wizard">
-            <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>Check the installation before adding provider credentials or activating automation.</p></section>
+            <section class="hero setup-hero"><p class="eyebrow">GUIDED CONFIGURATION</p><h1>Setup</h1><p>{{(windowsGuided ? "Use this browser to choose news sources. Connect AI and optional Telegram, and check preparation, in the CTI setup app. Nothing starts automatically." : "Check the installation before adding provider credentials or activating automation.")}}</p></section>
             <nav class="wizard-nav" aria-label="Setup steps">{{navigation}}</nav>
             <p class="wizard-caption">Step {{stepIndex + 1}} of 5 · Save each form before continuing. Navigation does not save changes or mark a step complete.</p>
             {{savedNotice}}
@@ -3106,12 +3111,13 @@ internal static class HtmlPages
             </details>
             <section class="setup-panel" id="n8n-check" {{Hidden("connection")}}>
               <div class="setup-heading"><div><p class="eyebrow">STEP 01</p><h2>Connect the automation service</h2></div><span class="check-state {{(handoffReady ? "ready" : "warning")}}">{{(handoffReady ? "Reachable" : "Needs attention")}}</span></div>
-              <div class="section-intro"><p>n8n runs the news collection and analysis tasks. Open n8n from the installer and create its owner account if you have not done so.</p><p>In n8n, open Settings → n8n API to create an API key for the setup forms. Keep it private. CTI does not store this key between requests.</p><p>{{(installerDatabasePrepared ? "The installer already recorded database setup. Review the note below, then continue to AI." : "Next, connect the database below. This lets the tasks save CTI data without starting collection.")}}</p></div>
+              <div class="section-intro"><p>n8n runs the news collection and analysis tasks. Open n8n from the installer and create its owner account if you have not done so.</p><p>{{(windowsGuided ? "Keep the CTI setup window open. Its Connect AI, Connect Telegram (optional), and Check setup actions do not require an n8n API key. Use this browser for source selection; reopen the same CTI-Setup EXE if you closed it." : "In n8n, open Settings → n8n API to create an API key for the setup forms. Keep it private. CTI does not store this key between requests.")}}</p><p>{{(installerDatabasePrepared ? "The installer already recorded database setup. Review the note below, then continue to AI." : "Next, connect the database below. This lets the tasks save CTI data without starting collection.")}}</p></div>
               <details class="setup-advanced"><summary>Advanced connection diagnostics</summary><p>{{E(n8nStatus.Detail)}}</p><p>Internal API: {{E(n8nStatus.ApiBaseUrl)}}</p><p>This reachability check does not validate your API key or owner account.</p></details>
             </section>
             <section class="setup-panel ai-panel" id="ai-setup" {{Hidden("ai")}}>
-              <div class="setup-heading"><div><p class="eyebrow">STEP 02</p><h2>Choose your AI service</h2></div><span class="check-state {{(aiProvider.ProfileDefined ? "ready" : "warning")}}">{{(aiProvider.ProfileDefined ? "Selection saved" : "Choose a service")}}</span></div>
-              <p class="section-intro">Choose your AI service and save the selection. Then enter its API key below and select Connect AI. Gemini supports this guided connection; other providers currently need advanced configuration. Saving your selection alone does not connect the key.</p>
+              <div class="setup-heading"><div><p class="eyebrow">STEP 02</p><h2>{{(windowsGuided ? "AI summaries (optional)" : "Choose your AI service")}}</h2></div><span class="check-state {{(aiProvider.ProfileDefined ? "ready" : "warning")}}">{{(windowsGuided ? "Key not checked here" : aiProvider.ProfileDefined ? "Selection saved" : "Choose a service")}}</span></div>
+              <p class="section-intro">{{(windowsGuided ? "AI summaries are optional. Use Connect AI in the CTI setup app to prepare the included Gemini tasks, or continue to news sources without AI. The provider profile below is advanced metadata only; saving it does not change the tasks or model in n8n." : "Choose your AI service and save the selection. Then enter its API key below and select Connect AI. Gemini supports this guided connection; other providers currently need advanced configuration. Saving your selection alone does not connect the key.")}}</p>
+              {{(windowsGuided ? "<details class=\"setup-advanced\" data-guided-profile=\"advanced\"><summary>Advanced: saved provider profile and custom providers</summary>" : "")}}
               <details class="setup-advanced"><summary>Saved profile details</summary><div class="ai-profile-grid">
                 <article><span>Provider</span><strong>{{E(providerLabel)}}</strong><small>Stable key: {{E(aiProvider.ProviderKey ?? "—")}}</small></article>
                 <article><span>Model</span><strong>{{E(modelLabel)}}</strong><small>Stored as provider-neutral metadata.</small></article>
@@ -3123,7 +3129,7 @@ internal static class HtmlPages
               <form class="ai-form" method="post" action="/setup/ai-profile">
                 <input type="hidden" name="_csrf" value="{{E(csrfToken)}}">
                 <label>Provider<select name="provider_type" required>{{Options(ProviderOptions, selectedProvider)}}</select></label>
-                <label>Model name<input name="model_identifier" value="{{E(selectedModel)}}" minlength="1" maxlength="200" required autocomplete="off"><small>Keep the suggested value unless your provider gives you a different model name.</small></label>
+                <label>Model name<input name="model_identifier" value="{{E(selectedModel)}}" minlength="1" maxlength="200" required autocomplete="off"><small>This saves profile metadata only. Changing it does not change the model used by the tasks in n8n.</small></label>
                 <details class="setup-advanced provider-advanced" {{(string.IsNullOrEmpty(selectedEndpoint) ? "" : "open")}}><summary>Advanced: custom service address</summary><p>Leave this empty for the standard provider address. Only change it if your provider gave you a different API address.</p><label>API base URL (optional)<input type="url" name="api_base_url" value="{{E(selectedEndpoint)}}" maxlength="500" placeholder="https://api.example.com/v1" autocomplete="off"></label></details>
                 <div class="form-actions"><p>Saving updates only the non-secret provider profile. It does not test the API or alter n8n.</p><button type="submit">Save AI profile</button></div>
               </form>
@@ -3135,15 +3141,16 @@ internal static class HtmlPages
                   <article><strong>Custom provider</strong><span class="check-state warning">Manual mapping</span><p>The validated prompt and JSON contract can be reused after a compatible workflow adapter is supplied.</p></article>
                 </div>
               </div></details>
+              {{(windowsGuided ? "</details>" : "")}}
               <div class="handoff-section">
-                <div class="setup-heading"><div><p class="eyebrow">CONNECT YOUR KEY</p><h3>Connect the AI service</h3></div><span class="check-state {{(handoffReady ? "ready" : "warning")}}">{{(handoffReady ? "Connection available" : "Check step 1")}}</span></div>
+                <div class="setup-heading"><div><p class="eyebrow">CONNECT YOUR KEY</p><h3>Connect the AI service</h3></div><span class="check-state {{(windowsGuided || handoffReady ? "ready" : "warning")}}">{{(windowsGuided ? "Use the setup app" : handoffReady ? "Connection available" : "Check step 1")}}</span></div>
                 <details class="setup-advanced"><summary>Connection diagnostics</summary><div class="handoff-grid">
                   <article><span>Network reachability</span><strong>{{(n8nStatus.Reachable ? "Reachable" : "Unavailable")}}</strong><small>The probe sends no API key or credential data.</small></article>
                   <article><span>Health endpoint</span><strong>{{(n8nStatus.HealthReady ? "Ready" : "Not ready")}}</strong><small>Checked through the configured internal n8n URL.</small></article>
                   <article><span>Credential API</span><strong>{{(n8nStatus.CredentialApiDetected ? "Detected" : "Not detected")}}</strong><small>{{(n8nStatus.AuthenticationRequired ? "Unauthenticated access rejected." : "Authentication boundary not confirmed.")}}</small></article>
                   <article><span>Configured API URL</span><strong>{{E(n8nStatus.ApiBaseUrl)}}</strong><small>{{E(n8nStatus.Detail)}}</small></article>
                 </div></details>
-                {{credentialForm}}
+                {{aiConnectionPanel}}
               </div>
               <details class="setup-advanced"><summary>Advanced: reconnect an existing AI key</summary><div class="workflow-mapping-section">
                 <div class="setup-heading"><div><p class="eyebrow">WORKFLOW CREDENTIAL MAPPING</p><h3>Gemini workflow drafts</h3></div><span class="check-state warning">Manual confirmation</span></div>
@@ -3184,7 +3191,7 @@ internal static class HtmlPages
               </div>
               <div class="handoff-section database-handoff-section">
                 <div class="setup-heading"><div><p class="eyebrow">CONNECT YOUR BOT</p><h3>Bot and private destination</h3></div></div>
-                {{telegramCredentialForm}}
+                {{telegramConnectionPanel}}
               </div>
               <details class="setup-advanced"><summary>Advanced: reconnect an existing Telegram bot</summary><div class="workflow-mapping-section">
                 <div class="setup-heading"><div><p class="eyebrow">PRIVATE CHAT AUTHORIZATION</p><h3>Three bundled workflow drafts</h3></div></div>
@@ -3193,12 +3200,13 @@ internal static class HtmlPages
             </section>
             <section class="setup-panel readiness-panel" id="readiness-setup" {{Hidden("review")}}>
               <div class="setup-heading"><div><p class="eyebrow">STEP 05</p><h2>Check before starting</h2></div><span class="check-state warning">Read only</span></div>
-              <p class="section-intro">Run the check below. It will list missing configuration or show the next activation instructions. Nothing starts automatically, and opening this step does not mean setup is complete.</p>
-              <p class="section-intro">Select outbound Telegram delivery and interactive Telegram queries separately. The query option cannot pass while its public HTTPS webhook configuration is missing.</p>
-              {{readinessForm}}
+              <p class="section-intro">{{(windowsGuided ? "First save at least one news source in step 3, then use Check setup in the CTI setup app. Return here for the starting instructions below. This browser cannot see the app's last result; no completion or activation is inferred." : "Run the check below. It will list missing configuration or show the next activation instructions. Nothing starts automatically, and opening this step does not mean setup is complete.")}}</p>
+              <p class="section-intro">{{(windowsGuided ? "The app's Telegram preparation check covers private bindings, not incoming HTTPS reachability. Do not activate incoming bot queries until your public HTTPS route reaches n8n. The advanced browser check can also inspect the recorded query settings." : "Select outbound Telegram delivery and interactive Telegram queries separately. The query option cannot pass while its public HTTPS webhook configuration is missing.")}}</p>
+              {{reviewConnectionPanel}}
+              <details class="setup-advanced activation-guidance"><summary>After a successful check: start one task at a time</summary><div class="activation-body"><p>A task is called a workflow in n8n. Open n8n from the CTI setup app. Start CTI Source Collection first and check its first run before enabling more tasks. Do not enable tasks for features you skipped.</p><ol><li>CTI Source Collection — collect selected sources.</li><li>CTI Article Analysis — only if AI is configured and checked.</li><li>CTI Vulnerability Enrichment and CTI Retention Maintenance.</li><li>CTI Weekly Report — only if AI is configured and checked.</li><li>CTI Weekly Telegram Delivery and n8n Workflow Error Alerts — only if Telegram is configured and checked.</li><li>CTI Telegram Query — only after separate public HTTPS routing verification.</li></ol><p>If the preparation check fails, fix it first. A first run can still fail because of a provider key, quota or source-network error. No task is activated by this page.</p></div></details>
             </section>
             <nav class="wizard-actions" aria-label="Continue setup">{{previousStep}}{{followingStep}}</nav>
-            <p class="wizard-caption">Keys are sent only when you submit a credential form. They are forwarded to n8n and are not saved in the CTI database.</p>
+            <p class="wizard-caption">{{(windowsGuided ? "Enter keys in the CTI setup app. Advanced browser credential forms remain available for manual setup; provider profiles never store API keys." : "Keys are sent only when you submit a credential form. They are forwarded to n8n and are not saved in the CTI database.")}}</p>
             </div>
             """);
     }

@@ -112,6 +112,24 @@ if (SetupGuide.Next(true, true, true, 2, true).Target != "#readiness-setup" ||
     throw new Exception("Installer history must not skip missing live n8n connection or final verification.");
 Console.WriteLine("PASS: managed installer history, external/unknown refusal and navigation boundaries.");
 
+if (!SetupGuide.HasWindowsGuidedConnections("local","true","true","v1")) throw new Exception("Guided Windows capability not recognized.");
+foreach (var values in new[] { ("cloudflare","true","true","v1"), ("local","false","true","v1"), ("local","true","false","v1"), ("local","true","true","V1"), ("local","true","true",""), ("local","true","true","v2") })
+    if (SetupGuide.HasWindowsGuidedConnections(values.Item1,values.Item2,values.Item3,values.Item4)) throw new Exception("Unknown or external Windows capability accepted.");
+foreach (var action in new[] {"ai","telegram","review"})
+{
+    const string manual="<form data-fixture=\"manual\"></form>";
+    var guided=SetupGuide.ConnectionPanel(action,manual,true);
+    if (!guided.Contains("data-installer-action=\""+action+"\"") || !guided.Contains("data-manual-fallback=\""+action+"\"") || !guided.Contains(manual) ||
+        !guided.Contains("No n8n API key is needed") || guided.Contains("<script") || guided.Contains("href=\"cti:")) throw new Exception("Unsafe or incomplete installer guidance.");
+    if (SetupGuide.ConnectionPanel(action,manual,false)!=manual) throw new Exception("Manual connection path changed.");
+}
+if (SetupGuide.Next(true,false,false,2,true,true).Target!="#readiness-setup" ||
+    SetupGuide.Next(true,false,false,0,true,true).Target!="#source-setup" ||
+    !SetupGuide.Next(true,false,false,0,true,true).Detail.Contains("No saved AI profile") ||
+    !SetupGuide.Next(true,true,true,2,true,true).Detail.Contains("preparation snapshot") ||
+    SetupGuide.Next(false,true,true,2,true,true).Target!="#n8n-check") throw new Exception("Guided navigation claims completion or requires a profile.");
+Console.WriteLine("PASS: guarded Windows capabilities, keyless action/fallback panels, optional AI and honest preparation navigation.");
+
 var validUrls = new[] { "https://hooks.example.com/", "https://Hooks.Example.com:8443/n8n/v1/", "https://hooks.example.com/a%20b/" };
 var invalidUrls = new[] { "https://10.0.0.5/", "https://192.168.1.20/", "https://[::]/", "https://[::1]/", "https://127.0.0.1/",
     "https://0.0.0.0/", "https://169.254.169.254/", "https://hooks.localhost/", "https://hooks.local/", "https://hooks.internal/",

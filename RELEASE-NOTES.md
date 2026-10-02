@@ -2,6 +2,7 @@
 
 - Unreleased Windows source: fresh managed database bootstrap, keyless **Connect AI**, **Connect Telegram (optional)** and **Check setup** dialogs. Trusted embedded ownership/pinned-image checks precede local CLI access; inactive reviewed drafts and unrelated data are preserved. No automatic activation, provider calls, or Telegram messages.
 - Add a read-only encrypted-export preparation audit with selected optional connections, all eight reviewed graphs, database/error/AI/private-Telegram binding checks, shared exclusive lock and consistent-snapshot refusal. Preparation is not presented as a live connection or public-webhook test.
+- Align the browser wizard with the easy Windows actions: optional AI, source selection in the browser, connections/checks in the setup app, and advanced manual fallbacks. Keep provider metadata advanced and make clear that it does not reconfigure the actual model node. A separate guarded capability record avoids confusing bootstrap history with current Windows UI support.
 - Tighten trailing-newline input rejection and published-version safety checks. Native dialog/DPI and released-EXE acceptance remain pending; published rc.9 is unchanged.
 - Fix the setup Referrer-Policy / native form Origin conflict while preserving mandatory Origin, CSRF and local Host checks. Rejected setup requests now explain that no changes were saved and how to retry safely.
 - Fresh Windows installations offer Continue setup on the selected port. Repair/update keeps Open dashboard and also provides Open setup. PowerShell prints the setup URL separately.
@@ -10,6 +11,8 @@
 - Add repeatable isolated real-PostgreSQL setup-record acceptance (PowerShell 7 and local Docker Desktop). No real provider credentials or workflow activation are needed.
 
 Validation: dashboard boundary/guide tests, 52 installer assertions, Windows mock setup flow and warning-free Windows build passed. Real PostgreSQL acceptance confirmed AI/source persistence, rejected-request state preservation and unavailable-n8n HTTP 503. Native-browser form policy behavior was separately verified using an isolated fixture. These do not replace graphical installer acceptance or successful real n8n credential/readiness validation.
+
+2 October source validation: 133 installer assertions (OS-privileged symlink case skipped), dashboard guide/boundary tests, PowerShell 5.1 mock setup and warning-free builds passed. Both managed-guided and manual real-PostgreSQL HTTP acceptance passed. Full isolated Windows setup confirmed schema 29, database bootstrap, the separate guided capability, eight disabled tasks without duplicates, reinstall preservation, Remove→setup data/key/port preservation and fixture cleanup. Browser AI/review layouts were visually checked on an isolated fixture. These checks do not replace native dialog/DPI, clean-machine or published-EXE acceptance, nor actual provider delivery tests.
 
 Existing configuration/data preservation and update consent rules remain unchanged. The browser has a guided five-step setup flow; source selection and manual/external-n8n configuration remain separate from the new Windows actions. There is no automatic activation or new topic/source expansion in this candidate. The EXE remains unsigned; this is not stable-release approval.
 

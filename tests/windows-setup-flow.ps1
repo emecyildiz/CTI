@@ -36,6 +36,7 @@ try {
     $env:COMPOSE_PROJECT_NAME = 'unrelated-project'
     $env:CTI_NETWORK_NAME = 'unrelated-network'
     $env:CTI_DATABASE_BOOTSTRAP_RECORDED = 'true'
+    $env:CTI_WINDOWS_GUIDED_CONNECTIONS = 'v1'
     & (Join-Path $testRoot 'setup.ps1') -DashboardPort $d -N8nPort $n -SkipWorkflowImport
     $config = [IO.File]::ReadAllText((Join-Path $testRoot '.env'))
     $owner = Get-Content -LiteralPath (Join-Path $testRoot '.cti-owner.json') -Raw | ConvertFrom-Json
@@ -48,6 +49,7 @@ try {
     Check ($env:COMPOSE_PROJECT_NAME -eq $owner.project) 'child project identity pinned'
     Check ($env:CTI_NETWORK_NAME -eq $owner.project) 'inherited network override blocked'
     Check ($env:CTI_DATABASE_BOOTSTRAP_RECORDED -ceq 'false') 'inherited automatic database history is ignored'
+    Check ($env:CTI_WINDOWS_GUIDED_CONNECTIONS -ceq 'none') 'inherited guided capability is ignored'
     Check ($global:CtiSetupFlowFixture.HealthUrls -contains "http://127.0.0.1:${d}/health/ready") 'readiness uses selected port'
     & (Join-Path $testRoot 'setup.ps1') -SkipWorkflowImport
     Check ([IO.File]::ReadAllText((Join-Path $testRoot '.env')) -ceq $config) 'reinstall preserves configuration and secrets'
