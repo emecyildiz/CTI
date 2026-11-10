@@ -5,7 +5,6 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.DataProtection.Repositories;
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Primitives;
 
 var settings = CoreOptions.Parse(args);
 using var transport = FeedClient.CreateTransport();
@@ -50,6 +49,8 @@ namespace CtiCore
             TimeProvider? clock = null, TimeSpan? pollInterval = null)
         {
             var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });
+            // Search terms belong to the local UI, not routine request-start logs.
+            builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
             builder.WebHost.ConfigureKestrel(k =>
             {
                 k.AddServerHeader = false;
@@ -92,7 +93,8 @@ namespace CtiCore
 
             app.MapGet("/", (HttpContext ctx, IAntiforgery antiforgery, ArticleStore store) =>
             {
-                if (!ReadFilter(ctx.Request.Query["filter"], out var filter))
+                var values = ctx.Request.Query;
+                if (!NewsQuery.TryRead(values["filter"], values["q"], values["page"], out var query))
                     return Results.BadRequest();
                 var token = antiforgery.GetAndStoreTokens(ctx);
                 var status = ctx.Request.Query["status"].ToString();
@@ -112,7 +114,7 @@ namespace CtiCore
                 {
                     var notice = FeedSource.Find(ctx.Request.Query["source"].ToString());
                     var sources = FeedSource.Catalog.Select(source => (source, store.ReadSource(source))).ToArray();
-                    return Results.Content(Dashboard.Render(store.Latest(filter), sources, token, notice, message, filter),
+                    return Results.Content(Dashboard.Render(store.ReadNews(query), sources, token, notice, message, query),
                         "text/html; charset=utf-8");
                 }
                 catch (SqliteException)
@@ -125,7 +127,7 @@ namespace CtiCore
             {
                 if (await ReadSourceForm(ctx, antiforgery) is not { } submitted)
                     return Results.BadRequest();
-                return SeeOther(ctx, submitted.Source, submitted.Filter,
+                return SeeOther(ctx, submitted.Source, submitted.Query,
                     await collection.Refresh(submitted.Source, automatic: false, ctx.RequestAborted));
             });
 
@@ -138,18 +140,18 @@ namespace CtiCore
                 try
                 {
                     store.SetCollectionPolicy(submitted.Source, enabled, automatic);
-                    return SeeOther(ctx, submitted.Source, submitted.Filter, "saved");
+                    return SeeOther(ctx, submitted.Source, submitted.Query, "saved");
                 }
                 catch (SqliteException)
                 {
                     app.Logger.LogWarning("Could not save local CTI collection settings.");
-                    return SeeOther(ctx, submitted.Source, submitted.Filter, "storage");
+                    return SeeOther(ctx, submitted.Source, submitted.Query, "storage");
                 }
             });
             return app;
         }
 
-        private static async Task<(FeedSource Source, IFormCollection Form, FeedSource? Filter)?> ReadSourceForm(
+        private static async Task<(FeedSource Source, IFormCollection Form, NewsQuery Query)?> ReadSourceForm(
             HttpContext ctx, IAntiforgery antiforgery)
         {
             if (!string.Equals(ctx.Request.Headers.Origin.ToString(), Origin(ctx), StringComparison.Ordinal)
@@ -160,16 +162,10 @@ namespace CtiCore
                 await antiforgery.ValidateRequestAsync(ctx);
                 var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
                 return form["source"].Count == 1 && FeedSource.Find(form["source"][0]) is { } source
-                    && ReadFilter(form["filter"], out var filter) ? (source, form, filter) : null;
+                    && NewsQuery.TryRead(form["filter"], form["q"], form["page"], out var query) ? (source, form, query) : null;
             }
             catch (AntiforgeryValidationException) { return null; }
             catch (InvalidDataException) { return null; }
-        }
-
-        private static bool ReadFilter(StringValues values, out FeedSource? filter)
-        {
-            filter = values.Count == 1 ? FeedSource.Find(values[0]) : null;
-            return values.Count == 0 || filter is not null;
         }
 
         private static bool ReadCheckbox(IFormCollection form, string name, out bool value)
@@ -181,11 +177,11 @@ namespace CtiCore
 
         private static string Origin(HttpContext ctx) => $"http://127.0.0.1:{ctx.Connection.LocalPort}";
 
-        private static IResult SeeOther(HttpContext ctx, FeedSource source, FeedSource? filter, string status)
+        private static IResult SeeOther(HttpContext ctx, FeedSource source, NewsQuery query, string status)
         {
             string id = Uri.EscapeDataString(source.Id);
-            string selection = filter is null ? "" : "&filter=" + Uri.EscapeDataString(filter.Id);
-            ctx.Response.Headers.Location = $"/?source={id}&status={status}{selection}#source-{id}";
+            KeyValuePair<string, string?>[] notice = [new("source", source.Id), new("status", status)];
+            ctx.Response.Headers.Location = "/" + QueryString.Create(notice.Concat(query.Parameters())) + "#source-" + id;
             return Results.StatusCode(StatusCodes.Status303SeeOther);
         }
 

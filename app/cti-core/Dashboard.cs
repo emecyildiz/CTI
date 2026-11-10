@@ -7,8 +7,8 @@ namespace CtiCore;
 
 internal static class Dashboard
 {
-    internal static string Render(IReadOnlyList<Article> articles, IReadOnlyList<(FeedSource Source, SourceState State)> sources,
-        AntiforgeryTokenSet token, FeedSource? notice, string? message, FeedSource? filter)
+    internal static string Render(NewsPage news, IReadOnlyList<(FeedSource Source, SourceState State)> sources,
+        AntiforgeryTokenSet token, FeedSource? notice, string? message, NewsQuery query)
     {
         static string Time(DateTimeOffset value) => $"""
             <time datetime="{value.ToString("O", CultureInfo.InvariantCulture)}">{value.ToString("dd.MM.yyyy HH:mm", CultureInfo.InvariantCulture)} UTC</time>
@@ -37,18 +37,22 @@ internal static class Dashboard
             .filters{display:flex;flex-wrap:wrap;gap:.4rem;margin:.7rem 0 1rem}
             .filters a{border:1px solid #cddbe0;border-radius:6px;padding:.3rem .55rem}
             .filters a[aria-current]{background:#095b67;color:#fff;font-weight:600}
+            .search label{display:block;font-weight:600;margin-bottom:.3rem}
+            .search-controls,.pagination{display:flex;align-items:center;flex-wrap:wrap;gap:.55rem}
+            .search input{font:inherit;padding:.55rem .65rem;border-radius:6px;border:1px solid #708690;min-width:8rem;flex:1}
+            .pagination{border-top:1px solid #d6e2e6;padding-top:.75rem;margin-top:.5rem}
             small{color:#425c68} li small{display:block;margin-top:.3rem} .status{margin:1rem 0 0;padding:.7rem;background:#e1f4f1}
             </style></head><body><main>
             <header><small>EMECWORKS / CTI</small><h1>Güvenlik haberleri</h1>
             <p>Haberler bu cihazda saklanır. <a href="#source-heading">Haber kaynaklarını yönet</a></p></header>
             """);
         int enabled = sources.Count(entry => entry.State.Enabled);
-        AppendArticles(html, articles, filter, enabled > 0);
+        AppendArticles(html, news, query, enabled > 0);
         html.Append($"""
             <section aria-labelledby="source-heading"><h2 id="source-heading">Haber kaynakları</h2>
             <p>{sources.Count} kaynak · {enabled} açık. Haber getirmek veya ayarları değiştirmek için bir kaynak seç.</p>
             """);
-        string? expanded = notice?.Id ?? (articles.Count == 0 && filter is null
+        string? expanded = notice?.Id ?? (news.Articles.Count == 0 && query is { Source: null, Title.Length: 0, Page: 1 }
             ? sources.FirstOrDefault(entry => entry.State.Enabled).Source?.Id : null);
         foreach (var (source, state) in sources.OrderByDescending(entry => entry.State.Enabled))
         {
@@ -57,8 +61,8 @@ internal static class Dashboard
                 <input type="hidden" name="{Escape(token.FormFieldName)}" value="{Escape(token.RequestToken)}">
                 <input type="hidden" name="source" value="{id}">
                 """;
-            if (filter is not null)
-                hidden += $"<input type=\"hidden\" name=\"filter\" value=\"{Escape(filter.Id)}\">";
+            foreach (var field in query.Parameters())
+                hidden += $"<input type=\"hidden\" name=\"{Escape(field.Key)}\" value=\"{Escape(field.Value)}\">";
             var last = state.LastAttemptSucceeded switch
             {
                 true => "Son deneme başarılı",
@@ -100,26 +104,41 @@ internal static class Dashboard
         return html.Append("</section></main></body></html>").ToString();
     }
 
-    private static void AppendArticles(StringBuilder html, IReadOnlyList<Article> articles, FeedSource? filter, bool sourceEnabled)
+    private static void AppendArticles(StringBuilder html, NewsPage news, NewsQuery query, bool sourceEnabled)
     {
         html.Append("""
             <section aria-labelledby="articles-heading"><h2 id="articles-heading">Son haberler</h2>
             <nav class="filters" aria-label="Haberleri kaynağa göre filtrele">
             """);
-        AppendFilterLink(html, null, filter is null);
+        AppendFilterLink(html, query, null);
         foreach (var source in FeedSource.Catalog)
-            AppendFilterLink(html, source, source.Id == filter?.Id);
+            AppendFilterLink(html, query, source);
         html.Append("</nav>");
-        if (articles.Count == 0)
-            html.Append(filter is not null
-                ? "<p>Bu kaynaktan henüz haber kaydedilmedi.</p>"
-                : sourceEnabled
-                    ? "<p>Henüz haber yok. <a href=\"#source-heading\">Bir kaynaktan haber getir</a>.</p>"
+        html.Append("""
+            <form class="search" method="get" action="/#articles-heading" role="search" aria-label="Kayıtlı haberlerde ara">
+            """);
+        if (query.Source is { } filter)
+            html.Append($"<input type=\"hidden\" name=\"filter\" value=\"{Escape(filter.Id)}\">");
+        html.Append($"""
+            <label for="title-search">Haber başlığında ara</label><div class="search-controls">
+            <input type="search" id="title-search" name="q" value="{Escape(query.Title)}" maxlength="{NewsQuery.MaxTitleLength}">
+            <button type="submit">Ara</button>
+            """);
+        if (query.Title.Length != 0)
+            html.Append($"<a href=\"{Escape(NewsUrl(query with { Title = "", Page = 1 }))}\">Aramayı temizle</a>");
+        html.Append("</div></form>");
+
+        if (news.Articles.Count == 0)
+            html.Append(query.Page > 1
+                ? "<p>Bu sayfada haber yok. Önceki sayfaya dönebilirsin.</p>"
+                : query.Title.Length > 0 ? "<p>Aramana uyan haber bulunamadı.</p>"
+                    : query.Source is not null ? "<p>Bu kaynaktan henüz haber kaydedilmedi.</p>"
+                    : sourceEnabled ? "<p>Henüz haber yok. <a href=\"#source-heading\">Bir kaynaktan haber getir</a>.</p>"
                     : "<p>Henüz haber yok. Başlamak için <a href=\"#source-heading\">bir kaynağı aç</a>.</p>");
         else
         {
             html.Append("<ul>");
-            foreach (var item in articles)
+            foreach (var item in news.Articles)
             {
                 // Treat stored values as untrusted as well as incoming RSS values.
                 var publisher = FeedSource.Catalog.FirstOrDefault(source => source.Name == item.Source);
@@ -134,14 +153,27 @@ internal static class Dashboard
             }
             html.Append("</ul>");
         }
+        if (query.Page > 1 || news.HasNext)
+        {
+            html.Append("<nav class=\"pagination\" aria-label=\"Haber sayfaları\">");
+            if (query.Page > 1)
+                html.Append($"<a href=\"{Escape(NewsUrl(query with { Page = query.Page - 1 }))}\" rel=\"prev\">Önceki</a>");
+            html.Append($"<span>Sayfa {query.Page.ToString(CultureInfo.InvariantCulture)}</span>");
+            if (news.HasNext)
+                html.Append($"<a href=\"{Escape(NewsUrl(query with { Page = query.Page + 1 }))}\" rel=\"next\">Sonraki</a>");
+            html.Append("</nav>");
+        }
         html.Append("</section>");
     }
 
-    private static void AppendFilterLink(StringBuilder html, FeedSource? source, bool selected)
+    private static void AppendFilterLink(StringBuilder html, NewsQuery query, FeedSource? source)
     {
-        var url = source is null ? "/#articles-heading" : $"/?filter={Uri.EscapeDataString(source.Id)}#articles-heading";
+        var url = NewsUrl(query with { Source = source, Page = 1 });
+        bool selected = source?.Id == query.Source?.Id;
         html.Append($"<a href=\"{Escape(url)}\"{(selected ? " aria-current=\"page\"" : "")}>{Escape(source?.Name ?? "Tümü")}</a>");
     }
+
+    private static string NewsUrl(NewsQuery query) => "/" + QueryString.Create(query.Parameters()) + "#articles-heading";
 
     private static string Escape(string? value) => HtmlEncoder.Default.Encode(value ?? "");
 }

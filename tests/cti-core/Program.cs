@@ -377,9 +377,45 @@ try
         Require(await Settings(browser, token, enabled: false, automatic: false, source: krebs.Id, filter: krebs.Id)
             == Redirect("saved", krebs.Id, krebs.Id) && (await browser.GetStringAsync(filterUrl)).Contains("Older Krebs investigation")
             && krebsRequests == 1, "Past records remain visible after a source is disabled.");
+        var second = await browser.GetStringAsync("/?page=2");
+        Require(all.Contains("/?page=2#articles-heading\" rel=\"next\"") && !all.Contains("Recent Microsoft 101")
+            && second.Contains("Recent Microsoft 101") && second.Contains("Older Krebs investigation")
+            && second.Contains("Sayfa 2") && second.Contains("rel=\"prev\"") && !second.Contains("rel=\"next\"")
+            && !second.Contains("Recent Microsoft 100"),
+            "The second page shows older records, with no duplicates at the boundary.");
+
+        var found = WebUtility.HtmlDecode(await browser.GetStringAsync("/?filter=" + ms.Id + "&q=rEcEnT%20MiCrOsOfT"));
+        var foundMore = await browser.GetStringAsync("/?filter=" + ms.Id + "&q=rEcEnT%20MiCrOsOfT&page=2");
+        Require(found.Contains($"/?filter={ms.Id}&q=rEcEnT%20MiCrOsOfT&page=2#articles-heading\" rel=\"next\"")
+            && foundMore.Contains("Recent Microsoft 101") && !foundMore.Contains("Older Krebs investigation")
+            && !foundMore.Contains("rel=\"next\""),
+            "Search is case-insensitive, combines with a source filter, and carries both parameters across pages.");
+        Require(filterStore.RecordCollection(ms, filterStore.ReadSource(ms).Revision, false, day,
+            [new("https://www.microsoft.com/en-us/security/blog/unicode/", ms.Name, "İSTANBUL Güvenlik %_ notu", day.AddYears(-2))]) == 1,
+            "Add a headline with Turkish letters and literal wildcard characters.");
+        string matched = WebUtility.HtmlDecode(await browser.GetStringAsync("/?q=istanbul%20guvenlik"));
+        string literal = WebUtility.HtmlDecode(await browser.GetStringAsync("/?q=%25_"));
+        Require(matched.Contains("İSTANBUL Güvenlik %_ notu") && literal.Contains("İSTANBUL Güvenlik %_ notu")
+            && !matched.Contains("Recent Microsoft") && !literal.Contains("Recent Microsoft"),
+            "Unicode folding finds Turkish titles while SQL wildcard characters remain literal.");
+        var noMatch = await browser.GetStringAsync("/?q=%22%3E%3Cscript%3E");
+        Require(noMatch.Contains("Aramana uyan haber bulunamadı.") && !noMatch.Contains("<script>")
+            && noMatch.Contains("&lt;script&gt;"), "Search input is safely escaped and empty results are clear.");
+        foreach (var url in new[] { "/?q=a&q=b", "/?q=%0Aexample", "/?q=" + new string('x', 121),
+                     "/?page=0", "/?page=1001", "/?page=2&page=3" })
+        {
+            using var response = await browser.GetAsync(url);
+            Require(response.StatusCode == HttpStatusCode.BadRequest, "Invalid search or page arguments are rejected.");
+        }
+        var savedWithSearch = await Submit(browser, token, source: krebs.Id, path: "/settings/source",
+            fields: [new("filter", ms.Id), new("q", "recent Microsoft"), new("page", "2")]);
+        Require(savedWithSearch == (303, $"/?source={krebs.Id}&status=saved&filter={ms.Id}&q=recent%20Microsoft&page=2#source-{krebs.Id}")
+            && (await browser.GetStringAsync(savedWithSearch.Redirect)).Contains("Recent Microsoft 101") && krebsRequests == 1,
+            "A source action preserves the search and page without starting a network request.");
         await app.StopAsync();
     }
     Console.WriteLine("PASS: source filter before list limit, catalog-only input, retained selection, disabled-source history, and Krebs permalinks.");
+    Console.WriteLine("PASS: title search, Turkish characters, literal symbols, HTML escaping, pagination, and search context across settings.");
 
     var thn = FeedSource.HackerNews;
     var sw = FeedSource.SecurityWeek;

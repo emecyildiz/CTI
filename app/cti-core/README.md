@@ -38,11 +38,13 @@ finish, but its result is not saved if the setting changed in flight.
 Already saved articles are not removed. Source and scheduling preferences
 persist across restarts. Run one CTI process per data directory.
 
-Under **Son haberler**, choose **Tümü** or a specific source. This filters
-saved news before applying the 100-item display limit; it does not contact
-the publisher or change which sources collect. The selection stays active
-when you refresh a source or save its settings. Disabled sources still show
-their previously saved news.
+Under **Son haberler**, choose **Tümü** or a specific source and optionally
+enter text in **Haber başlığında ara**. Search ignores case and accents and
+matches text in locally saved titles only. Use **Önceki** and **Sonraki** to
+browse 100 results at a time. Searching and filtering do not contact
+publishers or change which sources collect. Source actions retain the
+current filter, search and page; a new search or source filter starts at the
+first page. Disabled sources still show their previously saved news.
 
 Data defaults to `Emecworks/CTI-Core` under the current user's local
 application data directory. Pass `--data-dir PATH` to use another directory.
@@ -58,7 +60,7 @@ The Hacker News feed is fetched from its reviewed FeedBurner URL, but only
 valid `thehackernews.com` article URLs are accepted as links.
 It limits response size, time and item count, forbids XML DTDs, and stores
 only canonical links, titles, sources and dates. Titles are always rendered
-as text. The panel limits its display to the 100 newest saved articles.
+as text. The panel displays at most 100 results per page.
 
 ## Verification
 

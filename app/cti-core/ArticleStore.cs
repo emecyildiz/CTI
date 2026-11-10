@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Data.Sqlite;
 
 namespace CtiCore;
@@ -30,6 +31,10 @@ internal sealed class ArticleStore
                 published_unix INTEGER,
                 first_seen_unix INTEGER NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS ix_articles_newest
+                ON articles (coalesce(published_unix, first_seen_unix) DESC, url);
+            CREATE INDEX IF NOT EXISTS ix_articles_source_newest
+                ON articles (source, coalesce(published_unix, first_seen_unix) DESC, url);
             CREATE TABLE IF NOT EXISTS source_state (
                 source_id TEXT PRIMARY KEY NOT NULL,
                 enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
@@ -150,22 +155,42 @@ internal sealed class ArticleStore
         return added;
     }
 
-    public IReadOnlyList<Article> Latest(FeedSource? filter = null)
+    public NewsPage ReadNews(NewsQuery query)
     {
         using var db = Open();
         using var cmd = db.CreateCommand();
         const string select = "SELECT url, source, title, published_unix FROM articles";
-        const string newest = " ORDER BY coalesce(published_unix, first_seen_unix) DESC, url LIMIT 100;";
+        const string newest = " ORDER BY coalesce(published_unix, first_seen_unix) DESC, url LIMIT $take OFFSET $skip;";
+        var where = new List<string>(2);
         // Earlier previews already use the catalog's exact display name as the stored source.
-        cmd.CommandText = filter is null ? select + newest : select + " WHERE source = $source" + newest;
-        if (filter is not null) cmd.Parameters.AddWithValue("$source", filter.Name);
+        if (query.Source is { } source)
+        {
+            where.Add("source = $source");
+            cmd.Parameters.AddWithValue("$source", source.Name);
+        }
+        if (query.Title.Length != 0)
+        {
+            // Use a literal substring rather than SQL LIKE patterns (% and _ are normal characters).
+            db.CreateFunction<string, string, long>("cti_title_contains", static (title, needle) =>
+                CultureInfo.InvariantCulture.CompareInfo.IndexOf(title, needle, CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace)
+                    >= 0 ? 1L : 0L, isDeterministic: true);
+            where.Add("cti_title_contains(title, $title) = 1");
+            cmd.Parameters.AddWithValue("$title", query.Title);
+        }
+        cmd.CommandText = select + (where.Count == 0 ? "" : " WHERE " + string.Join(" AND ", where)) + newest;
+        cmd.Parameters.AddWithValue("$take", NewsQuery.PageSize + 1);
+        cmd.Parameters.AddWithValue("$skip", (query.Page - 1) * NewsQuery.PageSize);
         using var rows = cmd.ExecuteReader();
         var result = new List<Article>();
         while (rows.Read())
             result.Add(new Article(rows.GetString(0), rows.GetString(1), rows.GetString(2),
                 rows.IsDBNull(3) ? null : DateTimeOffset.FromUnixTimeSeconds(rows.GetInt64(3))));
-        return result;
+        bool extra = result.Count > NewsQuery.PageSize;
+        if (extra) result.RemoveAt(result.Count - 1);
+        return new(result, extra && query.Page < NewsQuery.MaxPage);
     }
+
+    public IReadOnlyList<Article> Latest(FeedSource? filter = null) => ReadNews(new(filter, "", 1)).Articles;
 
     private SqliteConnection Open()
     {
