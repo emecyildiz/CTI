@@ -16,6 +16,18 @@ const string fixture = """
     <item><title>Custom port</title><link>https://www.microsoft.com:444/en-us/security/blog/fake/</link></item>
     </channel></rss>
     """;
+const string otherNews = """
+    <item><title>Non-security story</title>
+      <link>https://www.bleepingcomputer.com/news/technology/non-security/</link></item>
+    """;
+const string securityNews = """
+    <item><title>BleepingComputer security story</title>
+      <link>https://www.bleepingcomputer.com/news/security/safe-story/?utm_source=rss</link></item>
+    <item><title>Not a BleepingComputer story</title>
+      <link>https://www.microsoft.com/en-us/security/blog/cross-source/</link></item>
+    <item><title>Encoded separator</title>
+      <link>https://www.bleepingcomputer.com/news/security/story%2felsewhere/</link></item>
+    """;
 
 var temp = Directory.CreateTempSubdirectory("emecworks-cti-core-test-");
 try
@@ -65,8 +77,8 @@ try
         Require((await Submit(browser, "bad-token")).Status == 400, "Missing/mismatched token rejected.");
         Require((await Submit(browser, token, source: "https://example.test/feed")).Status == 400 && fetched == 0,
             "Unknown source cannot initiate a fetch.");
-        Require(await Submit(browser, token) == (303, "/?status=1"), "One unique article is added.");
-        Require(await Submit(browser, token) == (303, "/?status=0"), "Refetch never duplicates an article.");
+        Require(await Submit(browser, token) == Redirect("1"), "One unique article is added.");
+        Require(await Submit(browser, token) == Redirect("0"), "Refetch never duplicates an article.");
         page = await browser.GetStringAsync("/");
         Require(page.Contains("&lt;script&gt;not code&lt;/script&gt;") && !page.Contains("<script>")
             && page.Contains("/2026/11/01/example/") && !page.Contains("utm_source") && !page.Contains("Off-catalog"),
@@ -74,14 +86,14 @@ try
         foreach (var failure in new[] { "redirect", "DTD", "oversize", "unsupported" })
         {
             mode = failure;
-            Require(await Submit(browser, token) == (303, "/?status=failed"), $"Feed failure is recoverable: {failure}.");
+            Require(await Submit(browser, token) == Redirect("failed"), $"Feed failure is recoverable: {failure}.");
         }
         mode = "blocked";
         var first = Submit(browser, token);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        try { Require(await Submit(browser, token) == (303, "/?status=busy"), "One fetch at a time."); }
+        try { Require(await Submit(browser, token) == Redirect("busy"), "One fetch at a time."); }
         finally { release.TrySetResult(); }
-        Require(await first == (303, "/?status=0"), "The first fetch still completes.");
+        Require(await first == Redirect("0"), "The first fetch still completes.");
         await app.StopAsync();
     }
 
@@ -117,7 +129,8 @@ try
         cmd.ExecuteNonQuery();
     }
     var migrated = new ArticleStore(legacy.FullName);
-    Require(migrated.ReadSource() is { Enabled: true, Automatic: false, LastAttempt: null }
+    Require(migrated.ReadSource(FeedSource.Microsoft) is { Enabled: true, Automatic: false, LastAttempt: null }
+        && migrated.ReadSource(FeedSource.BleepingComputer) is { Enabled: false, Automatic: false, LastAttempt: null }
         && migrated.Latest().Single().Title == "Saved in the first preview",
         "Adding settings to an existing preview database preserves its articles and never opts in.");
     Console.WriteLine("PASS: first-preview SQLite upgrade preserves articles and starts in manual mode.");
@@ -158,12 +171,12 @@ try
         Require((await Settings(browser, token, enabled: true, automatic: true, origin: "http://outside.test")).Status == 400
             && (await Settings(browser, "invalid", enabled: true, automatic: true)).Status == 400
             && (await Settings(browser, token, enabled: true, automatic: true, source: "unlisted")).Status == 400
-            && !scheduleStore.ReadSource().Automatic, "Settings rejects cross-origin, missing token, and unsupported sources.");
+            && !scheduleStore.ReadSource(FeedSource.Microsoft).Automatic, "Settings rejects cross-origin, missing token, and unsupported sources.");
         Require((await Submit(browser, token, path: "/settings/source", fields: [new("enabled", "on"), new("enabled", "off")])).Status == 400,
             "Ambiguous checkbox values are rejected.");
-        Require(await Settings(browser, token, enabled: true, automatic: true) == (303, "/?status=saved"), "Automatic collection opt-in saves.");
-        await WaitUntil(() => Task.FromResult(scheduleStore.ReadSource().LastSuccess == clock.GetUtcNow()), "First automatic attempt");
-        var success = scheduleStore.ReadSource();
+        Require(await Settings(browser, token, enabled: true, automatic: true) == Redirect("saved"), "Automatic collection opt-in saves.");
+        await WaitUntil(() => Task.FromResult(scheduleStore.ReadSource(FeedSource.Microsoft).LastSuccess == clock.GetUtcNow()), "First automatic attempt");
+        var success = scheduleStore.ReadSource(FeedSource.Microsoft);
         page = await browser.GetStringAsync("/");
         Require(success is { LastAttemptSucceeded: true, LastAdded: 1 } && scheduleStore.Latest().Count == 1
             && page.Contains("Son başarılı toplama") && page.Contains("10.11.2026 12:00 UTC") && requested == 1,
@@ -174,8 +187,8 @@ try
         Require(requested == 1, "Automatic collection does not run before the interval.");
         Volatile.Write(ref scheduleMode, 1);
         clock.Advance(TimeSpan.FromMinutes(1));
-        await WaitUntil(() => Task.FromResult(scheduleStore.ReadSource().LastAttemptSucceeded == false), "Scheduled failure");
-        var failure = scheduleStore.ReadSource();
+        await WaitUntil(() => Task.FromResult(scheduleStore.ReadSource(FeedSource.Microsoft).LastAttemptSucceeded == false), "Scheduled failure");
+        var failure = scheduleStore.ReadSource(FeedSource.Microsoft);
         page = await browser.GetStringAsync("/");
         Require(failure.LastAttempt == clock.GetUtcNow() && failure.LastSuccess == success.LastSuccess
             && failure.LastAdded is null && scheduleStore.Latest().Count == 1
@@ -189,20 +202,20 @@ try
         using var browser = Browser(app.Urls.Single());
         var token = Token(await browser.GetStringAsync("/"));
         await Task.Delay(poll * 4);
-        Require(requested == 2 && scheduleStore.ReadSource() is { Automatic: true, LastAttemptSucceeded: false },
+        Require(requested == 2 && scheduleStore.ReadSource(FeedSource.Microsoft) is { Automatic: true, LastAttemptSucceeded: false },
             "Schedule and failed-attempt cooldown survive restart.");
         Volatile.Write(ref scheduleMode, 2);
         clock.Advance(TimeSpan.FromHours(1));
         await inFlight.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var disabledAt = scheduleStore.ReadSource().LastAttempt;
+        var disabledAt = scheduleStore.ReadSource(FeedSource.Microsoft).LastAttempt;
         try
         {
-            Require(await Settings(browser, token, enabled: false, automatic: true) == (303, "/?status=saved"),
+            Require(await Settings(browser, token, enabled: false, automatic: true) == Redirect("saved"),
                 "Turning off the source also turns off automatic collection.");
         }
         finally { allowCompletion.TrySetResult(); }
-        await WaitUntil(async () => await Submit(browser, token) == (303, "/?status=disabled"), "In-flight request released");
-        Require(scheduleStore.ReadSource() is { Enabled: false, Automatic: false } disabled
+        await WaitUntil(async () => await Submit(browser, token) == Redirect("disabled"), "In-flight request released");
+        Require(scheduleStore.ReadSource(FeedSource.Microsoft) is { Enabled: false, Automatic: false } disabled
             && disabled.LastAttempt == disabledAt && scheduleStore.Latest().Count == 1,
             "A disabled source cannot fetch manually or commit an in-flight result.");
         await app.StopAsync();
@@ -218,11 +231,82 @@ try
         Require(requested == 3 && page.Contains("Kaynak kapalı") && page.Contains("<button type=\"submit\" disabled>"),
             "Disabled state and articles survive restart without a new request.");
         Volatile.Write(ref scheduleMode, 0);
-        Require(await Settings(browser, token, enabled: true, automatic: false) == (303, "/?status=saved")
-            && await Submit(browser, token) == (303, "/?status=0"), "Manual collection works with automatic collection off.");
+        Require(await Settings(browser, token, enabled: true, automatic: false) == Redirect("saved")
+            && await Submit(browser, token) == Redirect("0"), "Manual collection works with automatic collection off.");
         await app.StopAsync();
     }
     Console.WriteLine("PASS: opt-in scheduler, hourly interval, persisted status and settings, and in-flight disable protection.");
+
+    var ms = FeedSource.Microsoft;
+    var bc = FeedSource.BleepingComputer;
+    var catalogOptions = new CoreOptions(0, Path.Combine(temp.FullName, "catalog"));
+    var catalogStore = new ArticleStore(catalogOptions.DataDirectory);
+    var catalogClock = new TestClock(new DateTimeOffset(2026, 11, 10, 14, 0, 0, TimeSpan.Zero));
+    var msStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var completeMs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    int msRequests = 0, bcRequests = 0, otherOnly = 0;
+    using var catalogFeed = new HttpClient(new Stub(async (request, ct) =>
+    {
+        if (request.RequestUri == ms.FeedUri)
+        {
+            Interlocked.Increment(ref msRequests);
+            msStarted.TrySetResult();
+            await completeMs.Task.WaitAsync(ct);
+            return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        }
+        Require(request.RequestUri == bc.FeedUri, "Only a catalog feed can be requested.");
+        Interlocked.Increment(ref bcRequests);
+        var items = otherNews + (Volatile.Read(ref otherOnly) == 1 ? "" : securityNews);
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("<rss><channel>" + items + "</channel></rss>") };
+    }));
+    await using (var app = CoreApp.Create(catalogOptions, catalogFeed, catalogClock, poll))
+    {
+        await app.StartAsync();
+        using var browser = Browser(app.Urls.Single());
+        var token = Token(await browser.GetStringAsync("/"));
+        Require(await Submit(browser, token, source: bc.Id) == Redirect("disabled", bc.Id) && bcRequests == 0,
+            "The new source starts disabled and makes no request.");
+        Require(await Settings(browser, token, enabled: true, automatic: true) == Redirect("saved"), "Microsoft scheduling is enabled.");
+        await msStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            Require(await Settings(browser, token, enabled: true, automatic: true, source: bc.Id) == Redirect("saved", bc.Id),
+                "Scheduling is configured for the second source independently.");
+            // Manual collection must work even when the other publisher has a request in flight.
+            Require(await Submit(browser, token, source: bc.Id) == Redirect("1", bc.Id), "The other source can collect independently.");
+            Require(catalogStore.ReadSource(ms).LastAttempt is null && catalogStore.ReadSource(bc) is { LastAdded: 1, LastAttemptSucceeded: true },
+                "Collection status updates only the source that finished.");
+        }
+        finally { completeMs.TrySetResult(); }
+        await WaitUntil(() => Task.FromResult(catalogStore.ReadSource(ms).LastAttemptSucceeded == false), "Microsoft failure is persisted");
+        Require(catalogStore.ReadSource(bc).LastAttemptSucceeded == true && bcRequests == 1 && msRequests == 1,
+            "A failure from one publisher does not overwrite another publisher's success.");
+        var page = await browser.GetStringAsync(Redirect("1", bc.Id).Redirect);
+        var msCard = page.Split("id=\"source-microsoft-security\"", 2)[1].Split("</article>", 2)[0];
+        var bcCard = page.Split("id=\"source-bleepingcomputer-security\"", 2)[1].Split("</article>", 2)[0];
+        Require(!msCard.Contains("role=\"status\"") && bcCard.Contains("role=\"status\"")
+            && page.Contains("/news/security/safe-story/") && !page.Contains("/news/technology/non-security/")
+            && !page.Contains("Not a BleepingComputer story") && !page.Contains("Encoded separator"),
+            "Feedback is attached to the chosen source and only eligible security stories are linked.");
+        Volatile.Write(ref otherOnly, 1);
+        Require(await Submit(browser, token, source: bc.Id) == Redirect("0", bc.Id)
+            && catalogStore.ReadSource(bc) is { LastAdded: 0, LastAttemptSucceeded: true },
+            "A feed with only another category is valid but contributes no security articles.");
+        catalogClock.Advance(TimeSpan.FromHours(1));
+        await WaitUntil(() => Task.FromResult(catalogStore.ReadSource(ms).LastAttempt == catalogClock.GetUtcNow()
+            && catalogStore.ReadSource(bc).LastAttempt == catalogClock.GetUtcNow()), "Both sources are scheduled independently");
+        Require(msRequests == 2 && bcRequests == 3 && catalogStore.ReadSource(bc).LastAttemptSucceeded == true,
+            "Both due sources are attempted even when one fails.");
+        Require(await Settings(browser, token, enabled: false, automatic: true, source: bc.Id) == Redirect("saved", bc.Id),
+            "Turning off BleepingComputer does not require touching Microsoft.");
+        await app.StopAsync();
+    }
+    var catalogReopened = new ArticleStore(catalogOptions.DataDirectory);
+    Require(catalogReopened.ReadSource(ms) is { Enabled: true, Automatic: true, LastAttemptSucceeded: false }
+        && catalogReopened.ReadSource(bc) is { Enabled: false, Automatic: false, LastAttemptSucceeded: true }
+        && catalogReopened.Latest().Single().Source == bc.Name,
+        "Each source preserves its own settings, history, and saved articles.");
+    Console.WriteLine("PASS: multi-source catalog, independent settings and fetches, isolated failure, and security-category filtering.");
 
     if (args.SequenceEqual(new[] { "--live-feed" }))
     {
@@ -231,12 +315,19 @@ try
         await live.StartAsync();
         using var browser = Browser(live.Urls.Single());
         var token = Token(await browser.GetStringAsync("/"));
-        var result = await Submit(browser, token);
         var store = new ArticleStore(Path.Combine(temp.FullName, "live"));
-        var n = store.Latest().Count;
-        Require(result == (303, "/?status=" + n) && n > 0, "The real publisher feed loads and stores articles.");
+        foreach (var source in FeedSource.Catalog)
+        {
+            if (!source.EnabledByDefault)
+                Require(await Settings(browser, token, enabled: true, automatic: false, source: source.Id) == Redirect("saved", source.Id),
+                    "Opt-in to the live publisher.");
+            var result = await Submit(browser, token, source: source.Id);
+            var n = store.Latest().Count(a => a.Source == source.Name);
+            Require(result == Redirect(n.ToString(System.Globalization.CultureInfo.InvariantCulture), source.Id) && n > 0,
+                "The real publisher feed loads and stores articles: " + source.Id);
+            Console.WriteLine($"PASS: {source.Id} RSS through the actual preview; {n} news records.");
+        }
         await live.StopAsync();
-        Console.WriteLine($"PASS: Microsoft RSS through the actual preview, {n} news records stored in the temporary fixture.");
     }
 }
 finally
@@ -261,6 +352,9 @@ static string Token(string page)
 
 static HttpClient Browser(string address) =>
     new(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false }) { BaseAddress = new Uri(address) };
+
+static (int Status, string Redirect) Redirect(string status, string source = "microsoft-security") =>
+    (303, $"/?source={source}&status={status}#source-{source}");
 
 static Task<(int Status, string? Redirect)> Settings(HttpClient browser, string token, bool enabled, bool automatic,
     string? origin = null, string source = "microsoft-security")

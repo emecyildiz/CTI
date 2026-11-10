@@ -5,21 +5,41 @@ using System.Xml.Linq;
 
 namespace CtiCore;
 
-internal sealed record FeedSource(string Id, string Name, Uri FeedUri)
+internal sealed record FeedSource(string Id, string Name, Uri FeedUri, string ArticlePath,
+    bool EnabledByDefault, string? OtherNewsPath = null)
 {
     internal static readonly FeedSource Microsoft = new("microsoft-security", "Microsoft Security Blog",
-        new Uri("https://www.microsoft.com/en-us/security/blog/feed/"));
+        new Uri("https://www.microsoft.com/en-us/security/blog/feed/"), "/en-us/security/blog/", true);
+    internal static readonly FeedSource BleepingComputer = new("bleepingcomputer-security", "BleepingComputer · Güvenlik",
+        new Uri("https://www.bleepingcomputer.com/feed/"), "/news/security/", false, "/news/");
+    internal static readonly IReadOnlyList<FeedSource> Catalog = Array.AsReadOnly(new[] { Microsoft, BleepingComputer });
+
+    internal static FeedSource? Find(string? id) => Catalog.FirstOrDefault(source => source.Id == id);
+
+    // The feed can contain other publisher categories; those are not errors or security items.
+    public bool IsOtherNews(string text) => OtherNewsPath is { } prefix && PublisherUrl(text) is { } uri
+        && IsUnder(uri.AbsolutePath, prefix) && !uri.AbsolutePath.StartsWith(ArticlePath, StringComparison.Ordinal);
 
     public string? CanonicalLink(string text)
     {
-        if (text.Length > 2048 || !Uri.TryCreate(text, UriKind.Absolute, out var uri)
-            || uri.Scheme != Uri.UriSchemeHttps || uri.Host != FeedUri.Host || !uri.IsDefaultPort
-            || uri.UserInfo.Length != 0 || !uri.AbsolutePath.StartsWith("/en-us/security/blog/", StringComparison.Ordinal)
-            || uri.AbsolutePath.TrimEnd('/') == "/en-us/security/blog")
+        if (PublisherUrl(text) is not { } uri || !IsUnder(uri.AbsolutePath, ArticlePath))
             return null;
         return new UriBuilder(uri) { Path = uri.AbsolutePath.TrimEnd('/') + "/", Query = "", Fragment = "" }
             .Uri.AbsoluteUri;
     }
+
+    private Uri? PublisherUrl(string text)
+    {
+        if (text.Length > 2048 || !Uri.TryCreate(text, UriKind.Absolute, out var uri)
+            || uri.Scheme != Uri.UriSchemeHttps || uri.Host != FeedUri.Host || !uri.IsDefaultPort
+            || uri.UserInfo.Length != 0 || uri.AbsolutePath.Contains("%2f", StringComparison.OrdinalIgnoreCase)
+            || uri.AbsolutePath.Contains("%5c", StringComparison.OrdinalIgnoreCase))
+            return null;
+        return uri;
+    }
+
+    private static bool IsUnder(string path, string prefix) =>
+        path.StartsWith(prefix, StringComparison.Ordinal) && path.TrimEnd('/').Length >= prefix.Length;
 }
 
 internal sealed record Article(string Url, string Source, string Title, DateTimeOffset? Published);
@@ -77,12 +97,18 @@ internal sealed class FeedClient(HttpClient http)
 
         var articles = new List<Article>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        int scanned = 0;
+        int scanned = 0, otherNews = 0;
         foreach (var item in channel.Elements("item").Take(MaximumItems))
         {
             scanned++;
             var title = item.Element("title")?.Value.Trim();
-            var url = source.CanonicalLink(item.Element("link")?.Value.Trim() ?? "");
+            var link = item.Element("link")?.Value.Trim() ?? "";
+            if (source.IsOtherNews(link))
+            {
+                otherNews++;
+                continue;
+            }
+            var url = source.CanonicalLink(link);
             if (title is null || title.Length is 0 or > 500 || url is null || !seen.Add(url))
                 continue;
 
@@ -91,7 +117,7 @@ internal sealed class FeedClient(HttpClient http)
             articles.Add(new Article(url, source.Name, title, date));
         }
 
-        if (scanned > 0 && articles.Count == 0)
+        if (scanned > otherNews && articles.Count == 0)
             throw new InvalidDataException("The RSS items have no supported article links.");
         return articles;
     }

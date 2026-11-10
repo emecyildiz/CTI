@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Xml;
 using Microsoft.Data.Sqlite;
@@ -8,35 +9,35 @@ internal sealed class CollectionCoordinator(
     ArticleStore store, FeedClient feed, TimeProvider clock, ILogger<CollectionCoordinator> logger)
 {
     internal static readonly TimeSpan AutomaticInterval = TimeSpan.FromHours(1);
-    private int collecting;
+    private readonly ConcurrentDictionary<string, byte> collecting = new(StringComparer.Ordinal);
 
-    public async Task<string> Refresh(bool automatic, CancellationToken cancellationToken)
+    public async Task<string> Refresh(FeedSource source, bool automatic, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         bool acquired = false;
         try
         {
             // A scheduler tick that has nothing to do must not block a manual request.
-            if (automatic && !IsDue(store.ReadSource())) return "not-due";
-            if (Interlocked.CompareExchange(ref collecting, 1, 0) != 0) return "busy";
+            if (automatic && !IsDue(store.ReadSource(source))) return "not-due";
+            if (!collecting.TryAdd(source.Id, 0)) return "busy";
             acquired = true;
-            var state = store.ReadSource();
+            var state = store.ReadSource(source);
             if (!state.Enabled) return "disabled";
             if (automatic && !IsDue(state)) return "not-due";
 
             IReadOnlyList<Article>? news;
             try
             {
-                news = await feed.Read(FeedSource.Microsoft, cancellationToken);
+                news = await feed.Read(source, cancellationToken);
             }
             catch (Exception ex) when ((ex is HttpRequestException or InvalidDataException or IOException or XmlException
                 or OperationCanceledException) && !cancellationToken.IsCancellationRequested)
             {
-                logger.LogWarning("Reviewed RSS feed could not be fetched or parsed ({Type}).", ex.GetType().Name);
+                logger.LogWarning("RSS source {Source} could not be fetched or parsed ({Type}).", source.Id, ex.GetType().Name);
                 news = null;
             }
             cancellationToken.ThrowIfCancellationRequested();
-            var added = store.RecordCollection(state.Revision, automatic, clock.GetUtcNow(), news);
+            var added = store.RecordCollection(source, state.Revision, automatic, clock.GetUtcNow(), news);
             return added is null ? "changed" : news is null ? "failed" : added.Value.ToString(CultureInfo.InvariantCulture);
         }
         catch (SqliteException)
@@ -46,7 +47,7 @@ internal sealed class CollectionCoordinator(
         }
         finally
         {
-            if (acquired) Volatile.Write(ref collecting, 0);
+            if (acquired) collecting.TryRemove(source.Id, out _);
         }
     }
 
@@ -62,7 +63,9 @@ internal sealed class AutomaticCollector(CollectionCoordinator collection, TimeS
         try
         {
             while (await timer.WaitForNextTickAsync(stoppingToken))
-                await collection.Refresh(automatic: true, stoppingToken);
+                await Parallel.ForEachAsync(FeedSource.Catalog,
+                    new ParallelOptions { MaxDegreeOfParallelism = 2, CancellationToken = stoppingToken },
+                    async (source, token) => { await collection.Refresh(source, automatic: true, token); });
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
     }

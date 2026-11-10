@@ -7,7 +7,8 @@ namespace CtiCore;
 
 internal static class Dashboard
 {
-    internal static string Render(IReadOnlyList<Article> articles, SourceState state, AntiforgeryTokenSet token, string? message)
+    internal static string Render(IReadOnlyList<Article> articles, IReadOnlyList<(FeedSource Source, SourceState State)> sources,
+        AntiforgeryTokenSet token, FeedSource? notice, string? message)
     {
         static string Escape(string? value) => HtmlEncoder.Default.Encode(value ?? "");
         static string Time(DateTimeOffset value) => $"""
@@ -28,20 +29,25 @@ internal static class Dashboard
             .settings{border-top:1px solid #d6e2e6;padding-top:.75rem} .settings label{display:block;margin:.4rem 0}
             .settings button{background:#fff;color:#075565;margin-top:.5rem}
             dl{margin:.75rem 0} dt{font-weight:600} dd{margin:0 0 .45rem}
+            article{border-top:1px solid #d6e2e6;padding:1rem 0 .4rem} h3{margin:0 0 .55rem}
             a{color:#075565} ul{list-style:none;margin:0;padding:0} li{padding:.8rem 0;border-top:1px solid #d6e2e6}
             small{color:#425c68} li small{display:block;margin-top:.3rem} .status{margin:1rem 0 0;padding:.7rem;background:#e1f4f1}
             </style></head><body><main>
             <header><small>EMECWORKS / CTI</small><h1>Güvenlik haberleri</h1>
             <p>Haberleri şimdi getir veya otomatik toplamayı aç. Haberler bu cihazda saklanır.</p></header>
-            <section aria-labelledby="source-heading"><h2 id="source-heading">Haber kaynağı</h2>
+            <section aria-labelledby="source-heading"><h2 id="source-heading">Haber kaynakları</h2>
             """);
-        var source = Escape(FeedSource.Microsoft.Id);
-        var hidden = $"""
-            <input type="hidden" name="{Escape(token.FormFieldName)}" value="{Escape(token.RequestToken)}">
-            <input type="hidden" name="source" value="{source}">
-            """;
-        html.Append($"""
-            <p>{Escape(FeedSource.Microsoft.Name)} · {(state.Enabled ? "Kaynak açık" : "Kaynak kapalı")} ·
+        foreach (var (source, state) in sources)
+        {
+            var id = Escape(source.Id);
+            var hidden = $"""
+                <input type="hidden" name="{Escape(token.FormFieldName)}" value="{Escape(token.RequestToken)}">
+                <input type="hidden" name="source" value="{id}">
+                """;
+            html.Append($"""
+            <article id="source-{id}" aria-labelledby="label-{id}">
+            <h3 id="label-{id}">{Escape(source.Name)}</h3>
+            <p>{(state.Enabled ? "Kaynak açık" : "Kaynak kapalı")} ·
               {(state.Automatic ? "Otomatik toplama açık" : "Otomatik toplama kapalı")}</p>
             <form method="post" action="/refresh">
               {hidden}
@@ -64,10 +70,13 @@ internal static class Dashboard
               <button type="submit">Ayarları kaydet</button>
             </form>
             """);
-        if (message is not null) html.Append($"<p class=\"status\" role=\"status\">{Escape(message)}</p>");
+            if (notice?.Id == source.Id && message is not null)
+                html.Append($"<p class=\"status\" role=\"status\">{Escape(message)}</p>");
+            html.Append("</article>");
+        }
         html.Append("</section><section aria-labelledby=\"articles-heading\"><h2 id=\"articles-heading\">Son haberler</h2>");
         if (articles.Count == 0)
-            html.Append(state.Enabled
+            html.Append(sources.Any(entry => entry.State.Enabled)
                 ? "<p>Henüz haber yok. Başlamak için <strong>Haberleri getir</strong> düğmesine bas.</p>"
                 : "<p>Henüz haber yok. Başlamak için yukarıdan kaynağı aç.</p>");
         else
@@ -76,7 +85,8 @@ internal static class Dashboard
             foreach (var item in articles)
             {
                 // Treat stored values as untrusted as well as incoming RSS values.
-                var link = FeedSource.Microsoft.CanonicalLink(item.Url);
+                var publisher = FeedSource.Catalog.FirstOrDefault(source => source.Name == item.Source);
+                var link = publisher?.CanonicalLink(item.Url);
                 html.Append("<li>");
                 if (link is null) html.Append(Escape(item.Title));
                 else html.Append($"<a href=\"{Escape(link)}\" rel=\"noreferrer\">{Escape(item.Title)}</a>");

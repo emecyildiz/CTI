@@ -95,7 +95,7 @@ namespace CtiCore
                 var status = ctx.Request.Query["status"].ToString();
                 var message = status switch
                 {
-                    "busy" => "Haberler zaten getiriliyor. Biraz sonra tekrar dene.",
+                    "busy" => "Bu kaynağın haberleri zaten getiriliyor. Biraz sonra tekrar dene.",
                     "failed" => "Kaynak şu anda okunamadı. Kayıtlı haberlerin duruyor.",
                     "storage" => "Değişiklik kaydedilemedi. Biraz sonra tekrar dene.",
                     "saved" => "Toplama ayarları kaydedildi.",
@@ -107,7 +107,9 @@ namespace CtiCore
                 };
                 try
                 {
-                    return Results.Content(Dashboard.Render(store.Latest(), store.ReadSource(), token, message), "text/html; charset=utf-8");
+                    var notice = FeedSource.Find(ctx.Request.Query["source"].ToString());
+                    var sources = FeedSource.Catalog.Select(source => (source, store.ReadSource(source))).ToArray();
+                    return Results.Content(Dashboard.Render(store.Latest(), sources, token, notice, message), "text/html; charset=utf-8");
                 }
                 catch (SqliteException)
                 {
@@ -117,32 +119,33 @@ namespace CtiCore
 
             app.MapPost("/refresh", async (HttpContext ctx, IAntiforgery antiforgery, CollectionCoordinator collection) =>
             {
-                if (await ReadSourceForm(ctx, antiforgery) is null)
+                if (await ReadSourceForm(ctx, antiforgery) is not { } submitted)
                     return Results.BadRequest();
-                return SeeOther(ctx, await collection.Refresh(automatic: false, ctx.RequestAborted));
+                return SeeOther(ctx, submitted.Source,
+                    await collection.Refresh(submitted.Source, automatic: false, ctx.RequestAborted));
             });
 
             app.MapPost("/settings/source", async (HttpContext ctx, IAntiforgery antiforgery, ArticleStore store) =>
             {
-                var form = await ReadSourceForm(ctx, antiforgery);
-                if (form is null || !ReadCheckbox(form, "enabled", out var enabled)
-                    || !ReadCheckbox(form, "automatic", out var automatic))
+                if (await ReadSourceForm(ctx, antiforgery) is not { } submitted
+                    || !ReadCheckbox(submitted.Form, "enabled", out var enabled)
+                    || !ReadCheckbox(submitted.Form, "automatic", out var automatic))
                     return Results.BadRequest();
                 try
                 {
-                    store.SetCollectionPolicy(enabled, automatic);
-                    return SeeOther(ctx, "saved");
+                    store.SetCollectionPolicy(submitted.Source, enabled, automatic);
+                    return SeeOther(ctx, submitted.Source, "saved");
                 }
                 catch (SqliteException)
                 {
                     app.Logger.LogWarning("Could not save local CTI collection settings.");
-                    return SeeOther(ctx, "storage");
+                    return SeeOther(ctx, submitted.Source, "storage");
                 }
             });
             return app;
         }
 
-        private static async Task<IFormCollection?> ReadSourceForm(HttpContext ctx, IAntiforgery antiforgery)
+        private static async Task<(FeedSource Source, IFormCollection Form)?> ReadSourceForm(HttpContext ctx, IAntiforgery antiforgery)
         {
             if (!string.Equals(ctx.Request.Headers.Origin.ToString(), Origin(ctx), StringComparison.Ordinal)
                 || ctx.Request.ContentType?.Split(';')[0] != "application/x-www-form-urlencoded")
@@ -151,7 +154,8 @@ namespace CtiCore
             {
                 await antiforgery.ValidateRequestAsync(ctx);
                 var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
-                return form["source"].Count == 1 && form["source"][0] == FeedSource.Microsoft.Id ? form : null;
+                return form["source"].Count == 1 && FeedSource.Find(form["source"][0]) is { } source
+                    ? (source, form) : null;
             }
             catch (AntiforgeryValidationException) { return null; }
             catch (InvalidDataException) { return null; }
@@ -166,9 +170,10 @@ namespace CtiCore
 
         private static string Origin(HttpContext ctx) => $"http://127.0.0.1:{ctx.Connection.LocalPort}";
 
-        private static IResult SeeOther(HttpContext ctx, string status)
+        private static IResult SeeOther(HttpContext ctx, FeedSource source, string status)
         {
-            ctx.Response.Headers.Location = "/?status=" + status;
+            string id = Uri.EscapeDataString(source.Id);
+            ctx.Response.Headers.Location = $"/?source={id}&status={status}#source-{id}";
             return Results.StatusCode(StatusCodes.Status303SeeOther);
         }
 

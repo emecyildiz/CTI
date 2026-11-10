@@ -19,7 +19,9 @@ internal sealed class ArticleStore
             Pooling = false
         }.ToString();
         using var db = Open();
+        using var tx = db.BeginTransaction();
         using var cmd = db.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText = """
             CREATE TABLE IF NOT EXISTS articles (
                 url TEXT PRIMARY KEY NOT NULL,
@@ -38,14 +40,24 @@ internal sealed class ArticleStore
                 last_succeeded INTEGER CHECK (last_succeeded IN (0, 1)),
                 last_added INTEGER
             );
-            INSERT INTO source_state (source_id, enabled, automatic) VALUES ($source, 1, 0)
+            """;
+        cmd.ExecuteNonQuery();
+        cmd.CommandText = """
+            INSERT INTO source_state (source_id, enabled, automatic) VALUES ($source, $enabled, 0)
             ON CONFLICT (source_id) DO NOTHING;
             """;
-        cmd.Parameters.AddWithValue("$source", FeedSource.Microsoft.Id);
-        cmd.ExecuteNonQuery();
+        var sourceId = cmd.Parameters.Add("$source", SqliteType.Text);
+        var enabled = cmd.Parameters.Add("$enabled", SqliteType.Integer);
+        foreach (var source in FeedSource.Catalog)
+        {
+            sourceId.Value = source.Id;
+            enabled.Value = source.EnabledByDefault;
+            cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
     }
 
-    public SourceState ReadSource()
+    public SourceState ReadSource(FeedSource source)
     {
         using var db = Open();
         using var cmd = db.CreateCommand();
@@ -53,7 +65,7 @@ internal sealed class ArticleStore
             SELECT enabled, automatic, revision, last_attempt, last_success, last_succeeded, last_added
             FROM source_state WHERE source_id = $source;
             """;
-        cmd.Parameters.AddWithValue("$source", FeedSource.Microsoft.Id);
+        cmd.Parameters.AddWithValue("$source", source.Id);
         using var row = cmd.ExecuteReader();
         if (!row.Read()) throw new InvalidOperationException("The reviewed source has no settings row.");
         DateTimeOffset? Time(int column) => row.IsDBNull(column) ? null : DateTimeOffset.FromUnixTimeSeconds(row.GetInt64(column));
@@ -61,7 +73,7 @@ internal sealed class ArticleStore
             row.IsDBNull(5) ? null : row.GetBoolean(5), row.IsDBNull(6) ? null : row.GetInt32(6));
     }
 
-    public void SetCollectionPolicy(bool enabled, bool automatic)
+    public void SetCollectionPolicy(FeedSource source, bool enabled, bool automatic)
     {
         using var db = Open();
         using var cmd = db.CreateCommand();
@@ -69,14 +81,15 @@ internal sealed class ArticleStore
             UPDATE source_state SET enabled = $enabled, automatic = $automatic, revision = revision + 1
             WHERE source_id = $source AND (enabled <> $enabled OR automatic <> $automatic);
             """;
-        cmd.Parameters.AddWithValue("$source", FeedSource.Microsoft.Id);
+        cmd.Parameters.AddWithValue("$source", source.Id);
         cmd.Parameters.AddWithValue("$enabled", enabled);
         cmd.Parameters.AddWithValue("$automatic", enabled && automatic);
         cmd.ExecuteNonQuery();
     }
 
     // null articles means a failed fetch. null return means settings changed and the fetch was discarded.
-    public int? RecordCollection(long revision, bool automatic, DateTimeOffset finished, IReadOnlyList<Article>? articles)
+    public int? RecordCollection(FeedSource source, long revision, bool automatic,
+        DateTimeOffset finished, IReadOnlyList<Article>? articles)
     {
         using var db = Open();
         using var tx = db.BeginTransaction();
@@ -91,7 +104,7 @@ internal sealed class ArticleStore
             WHERE source_id = $source AND enabled = 1 AND revision = $revision
                 AND ($automatic = 0 OR automatic = 1);
             """;
-        update.Parameters.AddWithValue("$source", FeedSource.Microsoft.Id);
+        update.Parameters.AddWithValue("$source", source.Id);
         update.Parameters.AddWithValue("$revision", revision);
         update.Parameters.AddWithValue("$automatic", automatic);
         update.Parameters.AddWithValue("$when", finished.ToUnixTimeSeconds());
@@ -103,7 +116,7 @@ internal sealed class ArticleStore
         {
             update.Parameters.Clear();
             update.CommandText = "UPDATE source_state SET last_added = $added WHERE source_id = $source;";
-            update.Parameters.AddWithValue("$source", FeedSource.Microsoft.Id);
+            update.Parameters.AddWithValue("$source", source.Id);
             update.Parameters.AddWithValue("$added", added);
             update.ExecuteNonQuery();
         }
