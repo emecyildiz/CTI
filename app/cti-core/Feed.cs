@@ -60,7 +60,8 @@ internal sealed record FeedSource(string Id, string Name, Uri FeedUri, string Ar
         new(pattern, RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 }
 
-internal sealed record Article(string Url, string Source, string Title, DateTimeOffset? Published, string? Excerpt = null);
+internal sealed record Article(string Url, string Source, string Title, DateTimeOffset? Published,
+    string? Excerpt = null, string? TurkishSummary = null);
 
 internal sealed class FeedClient(HttpClient http)
 {

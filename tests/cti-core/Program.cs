@@ -522,6 +522,8 @@ try
     }
     Console.WriteLine("PASS: compact five-source catalog, independent publisher link formats, and bounded automatic concurrency.");
 
+    await SummaryTests.Run(temp.FullName);
+
     if (args.SequenceEqual(new[] { "--live-feed" }))
     {
         using var publisher = new HttpClient(FeedClient.CreateTransport());

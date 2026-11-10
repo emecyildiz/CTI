@@ -9,7 +9,11 @@ using Microsoft.Data.Sqlite;
 var settings = CoreOptions.Parse(args);
 using var transport = FeedClient.CreateTransport();
 using var http = new HttpClient(transport);
-await using var app = CoreApp.Create(settings, http);
+var gemini = GeminiSettings.Read(Environment.GetEnvironmentVariable("CTI_GEMINI_API_KEY"),
+    Environment.GetEnvironmentVariable("CTI_GEMINI_MODEL"));
+using var aiHttp = gemini is null ? null : new HttpClient(FeedClient.CreateTransport());
+await using var app = CoreApp.Create(settings, http,
+    summaryClient: gemini is not null && aiHttp is not null ? new GeminiSummaryClient(aiHttp, gemini) : null);
 await app.RunAsync();
 
 namespace CtiCore
@@ -46,7 +50,7 @@ namespace CtiCore
     internal static class CoreApp
     {
         public static WebApplication Create(CoreOptions options, HttpClient publisher,
-            TimeProvider? clock = null, TimeSpan? pollInterval = null)
+            TimeProvider? clock = null, TimeSpan? pollInterval = null, GeminiSummaryClient? summaryClient = null)
         {
             var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });
             // Search terms belong to the local UI, not routine request-start logs.
@@ -70,6 +74,8 @@ namespace CtiCore
             builder.Services.AddSingleton(new FeedClient(publisher));
             builder.Services.AddSingleton(clock ?? TimeProvider.System);
             builder.Services.AddSingleton<CollectionCoordinator>();
+            builder.Services.AddSingleton(sp => new SummaryCoordinator(sp.GetRequiredService<ArticleStore>(),
+                summaryClient, sp.GetRequiredService<TimeProvider>()));
             builder.Services.AddHostedService(sp => new AutomaticCollector(
                 sp.GetRequiredService<CollectionCoordinator>(), pollInterval ?? TimeSpan.FromMinutes(1)));
             var app = builder.Build();
@@ -91,7 +97,7 @@ namespace CtiCore
                 await next(ctx);
             });
 
-            app.MapGet("/", (HttpContext ctx, IAntiforgery antiforgery, ArticleStore store) =>
+            app.MapGet("/", (HttpContext ctx, IAntiforgery antiforgery, ArticleStore store, SummaryCoordinator summaries) =>
             {
                 var values = ctx.Request.Query;
                 if (!NewsQuery.TryRead(values["filter"], values["q"], values["page"], out var query))
@@ -114,7 +120,20 @@ namespace CtiCore
                 {
                     var notice = FeedSource.Find(ctx.Request.Query["source"].ToString());
                     var sources = FeedSource.Catalog.Select(source => (source, store.ReadSource(source))).ToArray();
-                    return Results.Content(Dashboard.Render(store.ReadNews(query), sources, token, notice, message, query),
+                    var summaryMessage = values["ai"].ToString() switch
+                    {
+                        "saved" => "Türkçe AI özeti yerel olarak kaydedildi.",
+                        "disabled" => "AI özeti kapalı. Haber toplama ve arama çalışmaya devam eder.",
+                        "unavailable" => "Bu haber için özetlenecek bir RSS açıklaması bulunamadı.",
+                        "limited" => "Gemini kullanım sınırına ulaşıldı. Daha sonra tekrar dene.",
+                        "key" => "Gemini erişimi reddedildi. API anahtarının ve proje izinlerinin geçerli olduğundan emin ol.",
+                        "busy" => "Bir AI özeti zaten hazırlanıyor. Biraz sonra tekrar dene.",
+                        "storage" => "AI özeti yerel veritabanına kaydedilemedi.",
+                        "failed" => "Gemini’den kullanılabilir bir özet alınamadı. Haber kaydı değişmedi.",
+                        _ => null
+                    };
+                    return Results.Content(Dashboard.Render(store.ReadNews(query), sources, token, notice, message, query,
+                        summaries.Enabled, summaryMessage),
                         "text/html; charset=utf-8");
                 }
                 catch (SqliteException)
@@ -148,11 +167,31 @@ namespace CtiCore
                     return SeeOther(ctx, submitted.Source, submitted.Query, "storage");
                 }
             });
+            app.MapPost("/summary", async (HttpContext ctx, IAntiforgery antiforgery, SummaryCoordinator summaries) =>
+            {
+                var form = await ReadProtectedForm(ctx, antiforgery);
+                if (form is null || form["article"].Count != 1
+                    || form["article"][0] is not { Length: > 0 and <= 2048 } url || url.Any(char.IsControl)
+                    || !NewsQuery.TryRead(form["filter"], form["q"], form["page"], out var query))
+                    return Results.BadRequest();
+                string status = await summaries.Create(url, ctx.RequestAborted);
+                KeyValuePair<string, string?>[] notice = [new("ai", status)];
+                string target = status == "saved" ? Dashboard.ArticleAnchor(url) : "articles-heading";
+                ctx.Response.Headers.Location = "/" + QueryString.Create(notice.Concat(query.Parameters())) + "#" + target;
+                return Results.StatusCode(StatusCodes.Status303SeeOther);
+            });
             return app;
         }
 
         private static async Task<(FeedSource Source, IFormCollection Form, NewsQuery Query)?> ReadSourceForm(
             HttpContext ctx, IAntiforgery antiforgery)
+        {
+            var form = await ReadProtectedForm(ctx, antiforgery);
+            return form is not null && form["source"].Count == 1 && FeedSource.Find(form["source"][0]) is { } source
+                && NewsQuery.TryRead(form["filter"], form["q"], form["page"], out var query) ? (source, form, query) : null;
+        }
+
+        private static async Task<IFormCollection?> ReadProtectedForm(HttpContext ctx, IAntiforgery antiforgery)
         {
             if (!string.Equals(ctx.Request.Headers.Origin.ToString(), Origin(ctx), StringComparison.Ordinal)
                 || ctx.Request.ContentType?.Split(';')[0] != "application/x-www-form-urlencoded")
@@ -160,9 +199,7 @@ namespace CtiCore
             try
             {
                 await antiforgery.ValidateRequestAsync(ctx);
-                var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
-                return form["source"].Count == 1 && FeedSource.Find(form["source"][0]) is { } source
-                    && NewsQuery.TryRead(form["filter"], form["q"], form["page"], out var query) ? (source, form, query) : null;
+                return await ctx.Request.ReadFormAsync(ctx.RequestAborted);
             }
             catch (AntiforgeryValidationException) { return null; }
             catch (InvalidDataException) { return null; }

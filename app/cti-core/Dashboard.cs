@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Antiforgery;
@@ -8,7 +9,7 @@ namespace CtiCore;
 internal static class Dashboard
 {
     internal static string Render(NewsPage news, IReadOnlyList<(FeedSource Source, SourceState State)> sources,
-        AntiforgeryTokenSet token, FeedSource? notice, string? message, NewsQuery query)
+        AntiforgeryTokenSet token, FeedSource? notice, string? message, NewsQuery query, bool aiEnabled, string? summaryMessage)
     {
         static string Time(DateTimeOffset value) => $"""
             <time datetime="{value.ToString("O", CultureInfo.InvariantCulture)}">{value.ToString("dd.MM.yyyy HH:mm", CultureInfo.InvariantCulture)} UTC</time>
@@ -43,13 +44,16 @@ internal static class Dashboard
             .pagination{border-top:1px solid #d6e2e6;padding-top:.75rem;margin-top:.5rem}
             .excerpt{margin:.4rem 0 0;color:#334c57;overflow-wrap:anywhere}
             .excerpt-note{display:block;margin:.6rem 0}
+            .ai-summary{border-left:3px solid #095b67;padding:.4rem .7rem;margin:.65rem 0 0;background:#eef7f7;overflow-wrap:anywhere}
+            .ai-summary p{margin:.2rem 0 0}
+            .summary-action{margin:.55rem 0 0}.summary-action button{background:#fff;color:#075565;font-size:.9rem}
             small{color:#425c68} li small{display:block;margin-top:.3rem} .status{margin:1rem 0 0;padding:.7rem;background:#e1f4f1}
             </style></head><body><main>
             <header><small>EMECWORKS / CTI</small><h1>Güvenlik haberleri</h1>
             <p>Haberler bu cihazda saklanır. <a href="#source-heading">Haber kaynaklarını yönet</a></p></header>
             """);
         int enabled = sources.Count(entry => entry.State.Enabled);
-        AppendArticles(html, news, query, enabled > 0);
+        AppendArticles(html, news, query, enabled > 0, token, aiEnabled, summaryMessage);
         html.Append($"""
             <section aria-labelledby="source-heading"><h2 id="source-heading">Haber kaynakları</h2>
             <p>{sources.Count} kaynak · {enabled} açık. Haber getirmek veya ayarları değiştirmek için bir kaynak seç.</p>
@@ -106,7 +110,8 @@ internal static class Dashboard
         return html.Append("</section></main></body></html>").ToString();
     }
 
-    private static void AppendArticles(StringBuilder html, NewsPage news, NewsQuery query, bool sourceEnabled)
+    private static void AppendArticles(StringBuilder html, NewsPage news, NewsQuery query, bool sourceEnabled,
+        AntiforgeryTokenSet token, bool aiEnabled, string? summaryMessage)
     {
         html.Append("""
             <section aria-labelledby="articles-heading"><h2 id="articles-heading">Son haberler</h2>
@@ -129,6 +134,10 @@ internal static class Dashboard
         if (query.Title.Length != 0)
             html.Append($"<a href=\"{Escape(NewsUrl(query with { Title = "", Page = 1 }))}\">Aramayı temizle</a>");
         html.Append("</div></form>");
+        if (summaryMessage is not null)
+            html.Append($"<p class=\"status\" role=\"status\">{Escape(summaryMessage)}</p>");
+        if (aiEnabled && news.Articles.Any(item => item.Excerpt is not null && item.TurkishSummary is null))
+            html.Append("<small class=\"excerpt-note\">AI özeti isteğe bağlıdır. Düğmeye bastığında yalnız seçtiğin haberin başlığı ve RSS açıklaması Gemini’ye gönderilir.</small>");
 
         if (news.Articles.Count == 0)
             html.Append(query.Page > 1
@@ -147,7 +156,7 @@ internal static class Dashboard
                 // Treat stored values as untrusted as well as incoming RSS values.
                 var publisher = FeedSource.Catalog.FirstOrDefault(source => source.Name == item.Source);
                 var link = publisher?.CanonicalLink(item.Url);
-                html.Append("<li>");
+                html.Append($"<li id=\"{ArticleAnchor(item.Url)}\">");
                 if (link is null) html.Append(Escape(item.Title));
                 else html.Append($"<a href=\"{Escape(link)}\" rel=\"noreferrer\">{Escape(item.Title)}</a>");
                 var when = item.Published is { } date
@@ -156,6 +165,10 @@ internal static class Dashboard
                 html.Append($"<small>{Escape(item.Source + when)}</small>");
                 if (item.Excerpt is { Length: > 0 } excerpt)
                     html.Append($"<p class=\"excerpt\">{Escape(excerpt)}</p>");
+                if (item.TurkishSummary is { Length: > 0 } summary)
+                    html.Append($"<div class=\"ai-summary\"><strong>Türkçe AI özeti</strong> <small>Yalnızca RSS bilgisine dayanır.</small><p>{Escape(summary)}</p></div>");
+                else if (aiEnabled && item.Excerpt is { Length: > 0 } && item.Url.Length <= 2048)
+                    AppendSummaryForm(html, item.Url, token, query);
                 html.Append("</li>");
             }
             html.Append("</ul>");
@@ -181,6 +194,21 @@ internal static class Dashboard
     }
 
     private static string NewsUrl(NewsQuery query) => "/" + QueryString.Create(query.Parameters()) + "#articles-heading";
+
+    internal static string ArticleAnchor(string url) =>
+        "news-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url)).AsSpan(0, 12)).ToLowerInvariant();
+
+    private static void AppendSummaryForm(StringBuilder html, string url, AntiforgeryTokenSet token, NewsQuery query)
+    {
+        html.Append($"""
+            <form class="summary-action" method="post" action="/summary">
+            <input type="hidden" name="{Escape(token.FormFieldName)}" value="{Escape(token.RequestToken)}">
+            <input type="hidden" name="article" value="{Escape(url)}">
+            """);
+        foreach (var field in query.Parameters())
+            html.Append($"<input type=\"hidden\" name=\"{Escape(field.Key)}\" value=\"{Escape(field.Value)}\">");
+        html.Append("<button type=\"submit\">Türkçe AI özeti oluştur</button></form>");
+    }
 
     private static string Escape(string? value) => HtmlEncoder.Default.Encode(value ?? "");
 }

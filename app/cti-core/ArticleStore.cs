@@ -17,6 +17,7 @@ internal sealed class ArticleStore
         {
             DataSource = Path.Combine(dataDirectory, "articles.sqlite3"),
             DefaultTimeout = 3,
+            ForeignKeys = true,
             Pooling = false
         }.ToString();
         using var db = Open();
@@ -36,6 +37,12 @@ internal sealed class ArticleStore
                 ON articles (coalesce(published_unix, first_seen_unix) DESC, url);
             CREATE INDEX IF NOT EXISTS ix_articles_source_newest
                 ON articles (source, coalesce(published_unix, first_seen_unix) DESC, url);
+            CREATE TABLE IF NOT EXISTS article_summaries (
+                url TEXT PRIMARY KEY NOT NULL REFERENCES articles(url) ON DELETE CASCADE,
+                summary TEXT NOT NULL CHECK (length(summary) BETWEEN 1 AND {GeminiSummaryClient.MaximumSummaryLength}),
+                model TEXT NOT NULL,
+                created_unix INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS source_state (
                 source_id TEXT PRIMARY KEY NOT NULL,
                 enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
@@ -185,13 +192,16 @@ internal sealed class ArticleStore
     {
         using var db = Open();
         using var cmd = db.CreateCommand();
-        const string select = "SELECT url, source, title, published_unix, excerpt FROM articles";
-        const string newest = " ORDER BY coalesce(published_unix, first_seen_unix) DESC, url LIMIT $take OFFSET $skip;";
+        const string select = """
+            SELECT a.url, a.source, a.title, a.published_unix, a.excerpt, s.summary FROM articles a
+            LEFT JOIN article_summaries s ON s.url = a.url
+            """;
+        const string newest = " ORDER BY coalesce(a.published_unix, a.first_seen_unix) DESC, a.url LIMIT $take OFFSET $skip;";
         var where = new List<string>(2);
         // Earlier previews already use the catalog's exact display name as the stored source.
         if (query.Source is { } source)
         {
-            where.Add("source = $source");
+            where.Add("a.source = $source");
             cmd.Parameters.AddWithValue("$source", source.Name);
         }
         if (query.Title.Length != 0)
@@ -200,7 +210,7 @@ internal sealed class ArticleStore
             db.CreateFunction<string, string, long>("cti_title_contains", static (title, needle) =>
                 CultureInfo.InvariantCulture.CompareInfo.IndexOf(title, needle, CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace)
                     >= 0 ? 1L : 0L, isDeterministic: true);
-            where.Add("cti_title_contains(title, $title) = 1");
+            where.Add("cti_title_contains(a.title, $title) = 1");
             cmd.Parameters.AddWithValue("$title", query.Title);
         }
         cmd.CommandText = select + (where.Count == 0 ? "" : " WHERE " + string.Join(" AND ", where)) + newest;
@@ -211,13 +221,42 @@ internal sealed class ArticleStore
         while (rows.Read())
             result.Add(new Article(rows.GetString(0), rows.GetString(1), rows.GetString(2),
                 rows.IsDBNull(3) ? null : DateTimeOffset.FromUnixTimeSeconds(rows.GetInt64(3)),
-                rows.IsDBNull(4) ? null : rows.GetString(4)));
+                rows.IsDBNull(4) ? null : rows.GetString(4),
+                rows.IsDBNull(5) ? null : rows.GetString(5)));
         bool extra = result.Count > NewsQuery.PageSize;
         if (extra) result.RemoveAt(result.Count - 1);
         return new(result, extra && query.Page < NewsQuery.MaxPage);
     }
 
     public IReadOnlyList<Article> Latest(FeedSource? filter = null) => ReadNews(new(filter, "", 1)).Articles;
+
+    public SummaryInput? ReadSummaryInput(string url)
+    {
+        using var db = Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            SELECT a.title, a.excerpt, s.url IS NOT NULL
+            FROM articles a LEFT JOIN article_summaries s ON s.url = a.url WHERE a.url = $url;
+            """;
+        cmd.Parameters.AddWithValue("$url", url);
+        using var row = cmd.ExecuteReader();
+        return row.Read() ? new(row.GetString(0), row.IsDBNull(1) ? null : row.GetString(1), row.GetBoolean(2)) : null;
+    }
+
+    public void SaveSummary(string url, string summary, string model, DateTimeOffset created)
+    {
+        using var db = Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO article_summaries (url, summary, model, created_unix)
+            VALUES ($url, $summary, $model, $created) ON CONFLICT (url) DO NOTHING;
+            """;
+        cmd.Parameters.AddWithValue("$url", url);
+        cmd.Parameters.AddWithValue("$summary", summary);
+        cmd.Parameters.AddWithValue("$model", model);
+        cmd.Parameters.AddWithValue("$created", created.ToUnixTimeSeconds());
+        cmd.ExecuteNonQuery();
+    }
 
     private SqliteConnection Open()
     {

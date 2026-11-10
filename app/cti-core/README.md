@@ -18,8 +18,8 @@ to see its collection and settings buttons. Each row shows whether the
 source is enabled, its automatic mode, and the latest attempt result.
 Automatic collection is off until explicitly enabled for a source.
 The screen shows saved headlines and, where available, a short
-publisher-provided RSS description (up to 360 characters). It does not
-generate or translate summaries. Another click does not duplicate the same article, and restarting
+publisher-provided RSS description (up to 360 characters). This publisher
+text is distinct from the optional AI summary below. Another click does not duplicate the same article, and restarting
 the process keeps what was saved. If the feed is unavailable, existing
 articles remain visible.
 
@@ -51,8 +51,8 @@ Data defaults to `Emecworks/CTI-Core` under the current user's local
 application data directory. Pass `--data-dir PATH` to use another directory.
 This preview listens on IPv4 loopback only; on a server, use a private SSH
 forward to access it. Do not expose it through a reverse proxy: there is no
-multi-user authentication in this package. It makes no AI or Telegram calls
-and requires neither Docker, n8n nor a separate database service.
+multi-user authentication in this package. It requires neither Docker, n8n
+nor a separate database service. It does not use Telegram.
 
 The publisher URLs and allowed article paths are fixed by the reviewed
 catalog. The collector does not follow redirects or fetch article pages.
@@ -66,6 +66,33 @@ and external assets are not stored or rendered. Existing rows get an excerpt
 only if the same article reappears in a normal collection; old titles and
 dates are left unchanged. The panel displays at most 100 results per page.
 
+## Optional Turkish summary with Gemini
+
+By default there are no AI calls. To opt in, set `CTI_GEMINI_API_KEY` in the
+app's environment and restart it. For example, from PowerShell 7:
+
+```powershell
+$env:CTI_GEMINI_API_KEY = Read-Host -MaskInput 'Gemini API key'
+dotnet run --project app/cti-core -- --port 8091
+Remove-Item Env:CTI_GEMINI_API_KEY
+```
+
+Use a [Gemini API key](https://ai.google.dev/gemini-api/docs/api-key) for
+your own project. Do not put the key in the repository or share it. CTI
+does not write the key to SQLite or send it to publishers. The default
+text model is `gemini-3.5-flash-lite`; optionally set `CTI_GEMINI_MODEL`
+to a [Gemini model ID](https://ai.google.dev/gemini-api/docs/models) that
+supports text generation and is available to your project.
+
+Click **Türkçe AI özeti oluştur** on a saved article with an RSS description.
+Only that article's saved title and short RSS description are sent to
+Google. CTI does not download the article, attach its URL, or send other
+records. A request may count against your Gemini quota or incur charges.
+There is no automatic AI processing, background batch, or retry. Completed
+summaries are saved locally and reused; removing the key hides the controls
+but keeps previously saved summaries. Summaries are based only on RSS and
+are not verified technical analyses.
+
 ## Verification
 
 ```sh
@@ -74,6 +101,7 @@ dotnet run --project tests/cti-core --configuration Release
 dotnet run --project tests/cti-core --configuration Release -- --live-feed
 ```
 
-The first security catalog has five reviewed sources. AI summaries and
-Telegram stay optional; additional topic catalogs, installer and
-authenticated server packaging are later work.
+The first security catalog has five reviewed sources. The default test
+suite exercises Gemini with a mock HTTP provider and does not require a
+key. Additional topic catalogs, Telegram, installer and authenticated
+server packaging are later work.
