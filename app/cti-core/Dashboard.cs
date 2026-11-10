@@ -8,9 +8,8 @@ namespace CtiCore;
 internal static class Dashboard
 {
     internal static string Render(IReadOnlyList<Article> articles, IReadOnlyList<(FeedSource Source, SourceState State)> sources,
-        AntiforgeryTokenSet token, FeedSource? notice, string? message)
+        AntiforgeryTokenSet token, FeedSource? notice, string? message, FeedSource? filter)
     {
-        static string Escape(string? value) => HtmlEncoder.Default.Encode(value ?? "");
         static string Time(DateTimeOffset value) => $"""
             <time datetime="{value.ToString("O", CultureInfo.InvariantCulture)}">{value.ToString("dd.MM.yyyy HH:mm", CultureInfo.InvariantCulture)} UTC</time>
             """;
@@ -31,12 +30,16 @@ internal static class Dashboard
             dl{margin:.75rem 0} dt{font-weight:600} dd{margin:0 0 .45rem}
             article{border-top:1px solid #d6e2e6;padding:1rem 0 .4rem} h3{margin:0 0 .55rem}
             a{color:#075565} ul{list-style:none;margin:0;padding:0} li{padding:.8rem 0;border-top:1px solid #d6e2e6}
+            .filters{display:flex;flex-wrap:wrap;gap:.4rem;margin:.7rem 0 1rem}
+            .filters a{border:1px solid #cddbe0;border-radius:6px;padding:.3rem .55rem}
+            .filters a[aria-current]{background:#095b67;color:#fff;font-weight:600}
             small{color:#425c68} li small{display:block;margin-top:.3rem} .status{margin:1rem 0 0;padding:.7rem;background:#e1f4f1}
             </style></head><body><main>
             <header><small>EMECWORKS / CTI</small><h1>Güvenlik haberleri</h1>
-            <p>Haberleri şimdi getir veya otomatik toplamayı aç. Haberler bu cihazda saklanır.</p></header>
-            <section aria-labelledby="source-heading"><h2 id="source-heading">Haber kaynakları</h2>
+            <p>Haberler bu cihazda saklanır. <a href="#source-heading">Haber kaynaklarını yönet</a></p></header>
             """);
+        AppendArticles(html, articles, filter, sources.Any(entry => entry.State.Enabled));
+        html.Append("<section aria-labelledby=\"source-heading\"><h2 id=\"source-heading\">Haber kaynakları</h2>");
         foreach (var (source, state) in sources)
         {
             var id = Escape(source.Id);
@@ -44,6 +47,8 @@ internal static class Dashboard
                 <input type="hidden" name="{Escape(token.FormFieldName)}" value="{Escape(token.RequestToken)}">
                 <input type="hidden" name="source" value="{id}">
                 """;
+            if (filter is not null)
+                hidden += $"<input type=\"hidden\" name=\"filter\" value=\"{Escape(filter.Id)}\">";
             html.Append($"""
             <article id="source-{id}" aria-labelledby="label-{id}">
             <h3 id="label-{id}">{Escape(source.Name)}</h3>
@@ -74,11 +79,25 @@ internal static class Dashboard
                 html.Append($"<p class=\"status\" role=\"status\">{Escape(message)}</p>");
             html.Append("</article>");
         }
-        html.Append("</section><section aria-labelledby=\"articles-heading\"><h2 id=\"articles-heading\">Son haberler</h2>");
+        return html.Append("</section></main></body></html>").ToString();
+    }
+
+    private static void AppendArticles(StringBuilder html, IReadOnlyList<Article> articles, FeedSource? filter, bool sourceEnabled)
+    {
+        html.Append("""
+            <section aria-labelledby="articles-heading"><h2 id="articles-heading">Son haberler</h2>
+            <nav class="filters" aria-label="Haberleri kaynağa göre filtrele">
+            """);
+        AppendFilterLink(html, null, filter is null);
+        foreach (var source in FeedSource.Catalog)
+            AppendFilterLink(html, source, source.Id == filter?.Id);
+        html.Append("</nav>");
         if (articles.Count == 0)
-            html.Append(sources.Any(entry => entry.State.Enabled)
-                ? "<p>Henüz haber yok. Başlamak için <strong>Haberleri getir</strong> düğmesine bas.</p>"
-                : "<p>Henüz haber yok. Başlamak için yukarıdan kaynağı aç.</p>");
+            html.Append(filter is not null
+                ? "<p>Bu kaynaktan henüz haber kaydedilmedi.</p>"
+                : sourceEnabled
+                    ? "<p>Henüz haber yok. <a href=\"#source-heading\">Bir kaynaktan haber getir</a>.</p>"
+                    : "<p>Henüz haber yok. Başlamak için <a href=\"#source-heading\">bir kaynağı aç</a>.</p>");
         else
         {
             html.Append("<ul>");
@@ -97,6 +116,14 @@ internal static class Dashboard
             }
             html.Append("</ul>");
         }
-        return html.Append("</section></main></body></html>").ToString();
+        html.Append("</section>");
     }
+
+    private static void AppendFilterLink(StringBuilder html, FeedSource? source, bool selected)
+    {
+        var url = source is null ? "/#articles-heading" : $"/?filter={Uri.EscapeDataString(source.Id)}#articles-heading";
+        html.Append($"<a href=\"{Escape(url)}\"{(selected ? " aria-current=\"page\"" : "")}>{Escape(source?.Name ?? "Tümü")}</a>");
+    }
+
+    private static string Escape(string? value) => HtmlEncoder.Default.Encode(value ?? "");
 }

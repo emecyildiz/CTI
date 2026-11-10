@@ -131,6 +131,7 @@ try
     var migrated = new ArticleStore(legacy.FullName);
     Require(migrated.ReadSource(FeedSource.Microsoft) is { Enabled: true, Automatic: false, LastAttempt: null }
         && migrated.ReadSource(FeedSource.BleepingComputer) is { Enabled: false, Automatic: false, LastAttempt: null }
+        && migrated.ReadSource(FeedSource.Krebs) is { Enabled: false, Automatic: false, LastAttempt: null }
         && migrated.Latest().Single().Title == "Saved in the first preview",
         "Adding settings to an existing preview database preserves its articles and never opts in.");
     Console.WriteLine("PASS: first-preview SQLite upgrade preserves articles and starts in manual mode.");
@@ -308,6 +309,69 @@ try
         "Each source preserves its own settings, history, and saved articles.");
     Console.WriteLine("PASS: multi-source catalog, independent settings and fetches, isolated failure, and security-category filtering.");
 
+    var krebs = FeedSource.Krebs;
+    var filterOptions = new CoreOptions(0, Path.Combine(temp.FullName, "filters"));
+    var filterStore = new ArticleStore(filterOptions.DataDirectory);
+    var day = new DateTimeOffset(2026, 11, 10, 10, 0, 0, TimeSpan.Zero);
+    var recent = Enumerable.Range(1, 101).Select(i => new Article(
+        $"https://www.microsoft.com/en-us/security/blog/recent-{i:000}/", ms.Name, $"Recent Microsoft {i:000}", day)).ToArray();
+    Require(filterStore.RecordCollection(ms, filterStore.ReadSource(ms).Revision, false, day, recent[..100]) == 100
+        && filterStore.RecordCollection(ms, filterStore.ReadSource(ms).Revision, false, day, recent[100..]) == 1,
+        "The combined list fixture contains more than 100 recent articles.");
+    const string krebsFeed = """
+        <rss version="2.0"><channel>
+        <item><title>Older Krebs investigation</title>
+          <link>https://krebsonsecurity.com/2025/01/fixture-story/?utm_source=rss</link>
+          <pubDate>Wed, 01 Jan 2025 00:00:00 +0000</pubDate></item>
+        <item><title>Repeated story</title><link>https://krebsonsecurity.com/2025/01/fixture-story#duplicate</link></item>
+        <item><title>Not a permalink</title><link>https://krebsonsecurity.com/feed/</link></item>
+        <item><title>Invalid month</title><link>https://krebsonsecurity.com/2025/13/not-a-story/</link></item>
+        <item><title>Other origin</title><link>https://sub.krebsonsecurity.com/2025/01/elsewhere/</link></item>
+        </channel></rss>
+        """;
+    int krebsRequests = 0;
+    using var filterFeed = new HttpClient(new Stub((request, _) =>
+    {
+        Require(request.RequestUri == krebs.FeedUri, "The article filter never selects an outbound feed.");
+        Interlocked.Increment(ref krebsRequests);
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(krebsFeed) });
+    }));
+    await using (var app = CoreApp.Create(filterOptions, filterFeed))
+    {
+        await app.StartAsync();
+        using var browser = Browser(app.Urls.Single());
+        var filterUrl = "/?filter=" + krebs.Id;
+        var filteredEmpty = await browser.GetStringAsync(filterUrl);
+        var token = Token(filteredEmpty);
+        Require(filteredEmpty.Contains("Bu kaynaktan henüz haber kaydedilmedi.") && krebsRequests == 0,
+            "Filtering a disabled source is read-only.");
+        using var bad = await browser.GetAsync("/?filter=unknown");
+        using var repeated = await browser.GetAsync(filterUrl + "&filter=" + ms.Id);
+        Require(bad.StatusCode == HttpStatusCode.BadRequest && repeated.StatusCode == HttpStatusCode.BadRequest
+            && (await Submit(browser, token, source: krebs.Id, fields: [new("filter", "https://example.test/feed")])).Status == 400
+            && krebsRequests == 0, "Unknown and duplicated filter IDs do not trigger reads from any publisher.");
+        Require(await Settings(browser, token, enabled: true, automatic: false, source: krebs.Id, filter: krebs.Id)
+            == Redirect("saved", krebs.Id, krebs.Id), "Settings keeps the selected filter.");
+        var result = await Submit(browser, token, source: krebs.Id, fields: [new("filter", krebs.Id)]);
+        Require(result == Redirect("1", krebs.Id, krebs.Id) && krebsRequests == 1, "Collection keeps the selected filter.");
+        var page = await browser.GetStringAsync(result.Redirect);
+        var all = await browser.GetStringAsync("/");
+        Require(page.Contains($"/?filter={krebs.Id}#articles-heading\" aria-current=\"page\"")
+            && page.Contains($"name=\"filter\" value=\"{krebs.Id}\"")
+            && page.Contains("Older Krebs investigation") && page.Contains("https://krebsonsecurity.com/2025/01/fixture-story/")
+            && !page.Contains("Recent Microsoft") && !page.Contains("Repeated story") && !page.Contains("Invalid month")
+            && !page.Contains("Other origin") && !page.Contains("Not a permalink"),
+            "The selected source renders only its own valid articles and retains navigation state.");
+        Require(filterStore.Latest().Count == 100 && all.Contains("Recent Microsoft") && !all.Contains("Older Krebs investigation")
+            && filterStore.Latest(krebs).Single().Title == "Older Krebs investigation",
+            "SQLite filters before the 100-row limit, so newer articles from other sources cannot hide the selected source.");
+        Require(await Settings(browser, token, enabled: false, automatic: false, source: krebs.Id, filter: krebs.Id)
+            == Redirect("saved", krebs.Id, krebs.Id) && (await browser.GetStringAsync(filterUrl)).Contains("Older Krebs investigation")
+            && krebsRequests == 1, "Past records remain visible after a source is disabled.");
+        await app.StopAsync();
+    }
+    Console.WriteLine("PASS: source filter before list limit, catalog-only input, retained selection, disabled-source history, and Krebs permalinks.");
+
     if (args.SequenceEqual(new[] { "--live-feed" }))
     {
         using var publisher = new HttpClient(FeedClient.CreateTransport());
@@ -353,15 +417,16 @@ static string Token(string page)
 static HttpClient Browser(string address) =>
     new(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false }) { BaseAddress = new Uri(address) };
 
-static (int Status, string Redirect) Redirect(string status, string source = "microsoft-security") =>
-    (303, $"/?source={source}&status={status}#source-{source}");
+static (int Status, string Redirect) Redirect(string status, string source = "microsoft-security", string? filter = null) =>
+    (303, $"/?source={source}&status={status}{(filter is null ? "" : "&filter=" + filter)}#source-{source}");
 
 static Task<(int Status, string? Redirect)> Settings(HttpClient browser, string token, bool enabled, bool automatic,
-    string? origin = null, string source = "microsoft-security")
+    string? origin = null, string source = "microsoft-security", string? filter = null)
 {
     var fields = new List<KeyValuePair<string, string>>();
     if (enabled) fields.Add(new("enabled", "on"));
     if (automatic) fields.Add(new("automatic", "on"));
+    if (filter is not null) fields.Add(new("filter", filter));
     return Submit(browser, token, source, origin, path: "/settings/source", fields: fields);
 }
 

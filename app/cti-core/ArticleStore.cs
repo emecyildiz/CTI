@@ -150,14 +150,15 @@ internal sealed class ArticleStore
         return added;
     }
 
-    public IReadOnlyList<Article> Latest()
+    public IReadOnlyList<Article> Latest(FeedSource? filter = null)
     {
         using var db = Open();
         using var cmd = db.CreateCommand();
-        cmd.CommandText = """
-            SELECT url, source, title, published_unix FROM articles
-            ORDER BY coalesce(published_unix, first_seen_unix) DESC, url LIMIT 100;
-            """;
+        const string select = "SELECT url, source, title, published_unix FROM articles";
+        const string newest = " ORDER BY coalesce(published_unix, first_seen_unix) DESC, url LIMIT 100;";
+        // Earlier previews already use the catalog's exact display name as the stored source.
+        cmd.CommandText = filter is null ? select + newest : select + " WHERE source = $source" + newest;
+        if (filter is not null) cmd.Parameters.AddWithValue("$source", filter.Name);
         using var rows = cmd.ExecuteReader();
         var result = new List<Article>();
         while (rows.Read())

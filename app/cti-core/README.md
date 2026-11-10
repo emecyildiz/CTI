@@ -12,8 +12,8 @@ dotnet run --project app/cti-core -- --port 8091
 
 Open **http://127.0.0.1:8091** and click **Haberleri getir** on a source.
 Microsoft Security Blog is initially enabled for manual collection.
-BleepingComputer is initially off; enable its source card to collect its
-security stories. Automatic collection is off until explicitly enabled
+BleepingComputer (security only) and Krebs on Security start disabled;
+enable their source cards to collect them. Automatic collection is off until explicitly enabled
 for a source. The screen shows saved articles, not generated
 summaries. Another click does not duplicate the same article, and restarting
 the process keeps what was saved. If the feed is unavailable, existing
@@ -33,6 +33,12 @@ and manual checks for that source. If a request was already sent, it may
 finish, but its result is not saved if the setting changed in flight.
 Already saved articles are not removed. Source and scheduling preferences
 persist across restarts. Run one CTI process per data directory.
+
+Under **Son haberler**, choose **Tümü** or a specific source. This filters
+saved news before applying the 100-item display limit; it does not contact
+the publisher or change which sources collect. The selection stays active
+when you refresh a source or save its settings. Disabled sources still show
+their previously saved news.
 
 Data defaults to `Emecworks/CTI-Core` under the current user's local
 application data directory. Pass `--data-dir PATH` to use another directory.
@@ -56,6 +62,6 @@ dotnet run --project tests/cti-core --configuration Release
 dotnet run --project tests/cti-core --configuration Release -- --live-feed
 ```
 
-Next increment: expand the reviewed catalog and add a way to filter saved
-stories by source. AI summaries and Telegram stay optional; installer and
-authenticated server packaging are later work.
+Next increment: make a larger catalog easy to browse and add the remaining
+reviewed security sources. AI summaries and Telegram stay optional;
+installer and authenticated server packaging are later work.

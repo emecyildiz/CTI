@@ -1,18 +1,22 @@
 using System.Globalization;
 using System.Net;
+using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 
 namespace CtiCore;
 
 internal sealed record FeedSource(string Id, string Name, Uri FeedUri, string ArticlePath,
-    bool EnabledByDefault, string? OtherNewsPath = null)
+    bool EnabledByDefault, string? OtherNewsPath = null, Regex? ArticleShape = null)
 {
     internal static readonly FeedSource Microsoft = new("microsoft-security", "Microsoft Security Blog",
         new Uri("https://www.microsoft.com/en-us/security/blog/feed/"), "/en-us/security/blog/", true);
     internal static readonly FeedSource BleepingComputer = new("bleepingcomputer-security", "BleepingComputer · Güvenlik",
         new Uri("https://www.bleepingcomputer.com/feed/"), "/news/security/", false, "/news/");
-    internal static readonly IReadOnlyList<FeedSource> Catalog = Array.AsReadOnly(new[] { Microsoft, BleepingComputer });
+    internal static readonly FeedSource Krebs = new("krebs-on-security", "Krebs on Security",
+        new Uri("https://krebsonsecurity.com/feed/"), "/", false, ArticleShape:
+        new Regex(@"\A/[0-9]{4}/(?:0[1-9]|1[0-2])/[^/]+/?\z", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking));
+    internal static readonly IReadOnlyList<FeedSource> Catalog = Array.AsReadOnly(new[] { Microsoft, BleepingComputer, Krebs });
 
     internal static FeedSource? Find(string? id) => Catalog.FirstOrDefault(source => source.Id == id);
 
@@ -22,7 +26,8 @@ internal sealed record FeedSource(string Id, string Name, Uri FeedUri, string Ar
 
     public string? CanonicalLink(string text)
     {
-        if (PublisherUrl(text) is not { } uri || !IsUnder(uri.AbsolutePath, ArticlePath))
+        if (PublisherUrl(text) is not { } uri || !IsUnder(uri.AbsolutePath, ArticlePath)
+            || (ArticleShape is not null && !ArticleShape.IsMatch(uri.AbsolutePath)))
             return null;
         return new UriBuilder(uri) { Path = uri.AbsolutePath.TrimEnd('/') + "/", Query = "", Fragment = "" }
             .Uri.AbsoluteUri;
