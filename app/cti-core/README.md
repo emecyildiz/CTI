@@ -12,9 +12,12 @@ dotnet run --project app/cti-core -- --port 8091
 
 Open **http://127.0.0.1:8091** and click **Haberleri getir** on a source.
 Microsoft Security Blog is initially enabled for manual collection.
-BleepingComputer (security only) and Krebs on Security start disabled;
-enable their source cards to collect them. Automatic collection is off until explicitly enabled
-for a source. The screen shows saved articles, not generated
+BleepingComputer (security only), Krebs on Security, The Hacker News,
+and SecurityWeek start disabled. Open a row under **Haber kaynakları**
+to see its collection and settings buttons. Each row shows whether the
+source is enabled, its automatic mode, and the latest attempt result.
+Automatic collection is off until explicitly enabled for a source.
+The screen shows saved articles, not generated
 summaries. Another click does not duplicate the same article, and restarting
 the process keeps what was saved. If the feed is unavailable, existing
 articles remain visible.
@@ -25,8 +28,9 @@ the next minute tick unless a manual or automatic attempt already finished
 in the past hour. A failed attempt also waits about an hour before an
 automatic retry; manual refresh remains available. The page shows the
 last attempt, its result, and the last success separately for each source
-(UTC). A slow or failed source does not block the other source's collection
-or overwrite its status. An error does not erase a previous success.
+(UTC). One source's failure does not overwrite another source's status.
+The scheduler runs at most two automatic requests at once, and still checks
+the other due sources. An error does not erase a previous success.
 
 Unchecking **Bu kaynaktan haber topla** and saving stops new automatic
 and manual checks for that source. If a request was already sent, it may
@@ -50,6 +54,8 @@ and requires neither Docker, n8n nor a separate database service.
 The publisher URLs and allowed article paths are fixed by the reviewed
 catalog. The collector does not follow redirects or fetch article pages.
 Only `/news/security/` stories from the BleepingComputer news feed are kept.
+The Hacker News feed is fetched from its reviewed FeedBurner URL, but only
+valid `thehackernews.com` article URLs are accepted as links.
 It limits response size, time and item count, forbids XML DTDs, and stores
 only canonical links, titles, sources and dates. Titles are always rendered
 as text. The panel limits its display to the 100 newest saved articles.
@@ -62,6 +68,6 @@ dotnet run --project tests/cti-core --configuration Release
 dotnet run --project tests/cti-core --configuration Release -- --live-feed
 ```
 
-Next increment: make a larger catalog easy to browse and add the remaining
-reviewed security sources. AI summaries and Telegram stay optional;
-installer and authenticated server packaging are later work.
+The first security catalog has five reviewed sources. AI summaries and
+Telegram stay optional; additional topic catalogs, installer and
+authenticated server packaging are later work.

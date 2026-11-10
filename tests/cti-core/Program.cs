@@ -67,6 +67,11 @@ try
         var page = await ready.Content.ReadAsStringAsync();
         var token = Token(page);
         Require(fetched == 0 && WebUtility.HtmlDecode(page).Contains("Henüz haber yok"), "An empty startup makes no network request.");
+        Require(Regex.Matches(page, "<details class=\"source-card\"").Count == 5
+            && Regex.Matches(page, "<details class=\"source-card\" open>").Count == 1
+            && page.Contains("5 kaynak · 1 açık")
+            && page.Contains("id=\"label-the-hacker-news\"") && page.Contains("id=\"label-securityweek\""),
+            "The initial catalog shows all five sources compactly with only the default source expanded.");
         Require(ready.Headers.GetValues("Content-Security-Policy").Single().Contains("frame-ancestors 'none'"),
             "Frame protection is enabled.");
         using var badHost = new HttpRequestMessage(HttpMethod.Get, "/") { Headers = { Host = "outside.test" } };
@@ -132,6 +137,8 @@ try
     Require(migrated.ReadSource(FeedSource.Microsoft) is { Enabled: true, Automatic: false, LastAttempt: null }
         && migrated.ReadSource(FeedSource.BleepingComputer) is { Enabled: false, Automatic: false, LastAttempt: null }
         && migrated.ReadSource(FeedSource.Krebs) is { Enabled: false, Automatic: false, LastAttempt: null }
+        && migrated.ReadSource(FeedSource.HackerNews) is { Enabled: false, Automatic: false, LastAttempt: null }
+        && migrated.ReadSource(FeedSource.SecurityWeek) is { Enabled: false, Automatic: false, LastAttempt: null }
         && migrated.Latest().Single().Title == "Saved in the first preview",
         "Adding settings to an existing preview database preserves its articles and never opts in.");
     Console.WriteLine("PASS: first-preview SQLite upgrade preserves articles and starts in manual mode.");
@@ -358,6 +365,8 @@ try
         var all = await browser.GetStringAsync("/");
         Require(page.Contains($"/?filter={krebs.Id}#articles-heading\" aria-current=\"page\"")
             && page.Contains($"name=\"filter\" value=\"{krebs.Id}\"")
+            && page.Split($"id=\"source-{krebs.Id}\"", 2)[1].Split("</article>", 2)[0]
+                .Contains("<details class=\"source-card\" open>")
             && page.Contains("Older Krebs investigation") && page.Contains("https://krebsonsecurity.com/2025/01/fixture-story/")
             && !page.Contains("Recent Microsoft") && !page.Contains("Repeated story") && !page.Contains("Invalid month")
             && !page.Contains("Other origin") && !page.Contains("Not a permalink"),
@@ -371,6 +380,50 @@ try
         await app.StopAsync();
     }
     Console.WriteLine("PASS: source filter before list limit, catalog-only input, retained selection, disabled-source history, and Krebs permalinks.");
+
+    var thn = FeedSource.HackerNews;
+    var sw = FeedSource.SecurityWeek;
+    Require(thn.CanonicalLink("https://thehackernews.com/2026/11/security-news.html/?utm=1#example")
+        == "https://thehackernews.com/2026/11/security-news.html"
+        && thn.CanonicalLink("https://feeds.feedburner.com/2026/11/security-news.html") is null
+        && thn.CanonicalLink("https://thehackernews.com/2026/11/not-an-article/") is null
+        && sw.CanonicalLink("https://www.securityweek.com/security-news?utm=1") == "https://www.securityweek.com/security-news/"
+        && sw.CanonicalLink("https://www.securityweek.com/feed/") is null
+        && sw.CanonicalLink("https://www.securityweek.com/category/security-news/") is null,
+        "Feed and article hosts may differ, and each publisher keeps its own canonical link shape.");
+
+    var waveOptions = new CoreOptions(0, Path.Combine(temp.FullName, "scheduler-wave"));
+    var waveStore = new ArticleStore(waveOptions.DataDirectory);
+    foreach (var source in FeedSource.Catalog)
+        waveStore.SetCollectionPolicy(source, enabled: true, automatic: true);
+    var readyWave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var releaseWave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    int waveRequests = 0, inFlightWave = 0, excess = 0;
+    using var waveFeed = new HttpClient(new Stub(async (_, ct) =>
+    {
+        int running = Interlocked.Increment(ref inFlightWave);
+        if (running > 2) Interlocked.Increment(ref excess);
+        if (Interlocked.Increment(ref waveRequests) >= 2) readyWave.TrySetResult();
+        try { await releaseWave.Task.WaitAsync(ct); }
+        finally { Interlocked.Decrement(ref inFlightWave); }
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("<rss><channel/></rss>") };
+    }));
+    await using (var app = CoreApp.Create(waveOptions, waveFeed, clock, poll))
+    {
+        await app.StartAsync();
+        try
+        {
+            await readyWave.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Delay(poll * 3);
+            Require(waveRequests == 2, "Two in-flight requests hold the remaining automatic publishers in the queue.");
+        }
+        finally { releaseWave.TrySetResult(); }
+        await WaitUntil(() => Task.FromResult(FeedSource.Catalog.All(source => waveStore.ReadSource(source).LastAttemptSucceeded == true)),
+            "Every due source in the five-source catalog is eventually checked");
+        Require(waveRequests == 5 && excess == 0, "A five-source automatic wave stays within the two-request limit.");
+        await app.StopAsync();
+    }
+    Console.WriteLine("PASS: compact five-source catalog, independent publisher link formats, and bounded automatic concurrency.");
 
     if (args.SequenceEqual(new[] { "--live-feed" }))
     {
@@ -386,7 +439,7 @@ try
                 Require(await Settings(browser, token, enabled: true, automatic: false, source: source.Id) == Redirect("saved", source.Id),
                     "Opt-in to the live publisher.");
             var result = await Submit(browser, token, source: source.Id);
-            var n = store.Latest().Count(a => a.Source == source.Name);
+            var n = store.Latest(source).Count;
             Require(result == Redirect(n.ToString(System.Globalization.CultureInfo.InvariantCulture), source.Id) && n > 0,
                 "The real publisher feed loads and stores articles: " + source.Id);
             Console.WriteLine($"PASS: {source.Id} RSS through the actual preview; {n} news records.");

@@ -7,7 +7,8 @@ using System.Xml.Linq;
 namespace CtiCore;
 
 internal sealed record FeedSource(string Id, string Name, Uri FeedUri, string ArticlePath,
-    bool EnabledByDefault, string? OtherNewsPath = null, Regex? ArticleShape = null)
+    bool EnabledByDefault, string? OtherNewsPath = null, Regex? ArticleShape = null,
+    string? ArticleHost = null, bool DirectoryPermalinks = true)
 {
     internal static readonly FeedSource Microsoft = new("microsoft-security", "Microsoft Security Blog",
         new Uri("https://www.microsoft.com/en-us/security/blog/feed/"), "/en-us/security/blog/", true);
@@ -15,8 +16,16 @@ internal sealed record FeedSource(string Id, string Name, Uri FeedUri, string Ar
         new Uri("https://www.bleepingcomputer.com/feed/"), "/news/security/", false, "/news/");
     internal static readonly FeedSource Krebs = new("krebs-on-security", "Krebs on Security",
         new Uri("https://krebsonsecurity.com/feed/"), "/", false, ArticleShape:
-        new Regex(@"\A/[0-9]{4}/(?:0[1-9]|1[0-2])/[^/]+/?\z", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking));
-    internal static readonly IReadOnlyList<FeedSource> Catalog = Array.AsReadOnly(new[] { Microsoft, BleepingComputer, Krebs });
+        PathPattern(@"\A/[0-9]{4}/(?:0[1-9]|1[0-2])/[^/]+/?\z"));
+    internal static readonly FeedSource HackerNews = new("the-hacker-news", "The Hacker News",
+        new Uri("https://feeds.feedburner.com/TheHackersNews"), "/", false, ArticleShape:
+        PathPattern(@"\A/[0-9]{4}/(?:0[1-9]|1[0-2])/[a-z0-9][a-z0-9-]*\.html/?\z"),
+        ArticleHost: "thehackernews.com", DirectoryPermalinks: false);
+    internal static readonly FeedSource SecurityWeek = new("securityweek", "SecurityWeek",
+        new Uri("https://www.securityweek.com/feed/"), "/", false, ArticleShape:
+        PathPattern(@"\A/[a-z0-9]+(?:-[a-z0-9]+)+/?\z"));
+    internal static readonly IReadOnlyList<FeedSource> Catalog =
+        Array.AsReadOnly(new[] { Microsoft, BleepingComputer, Krebs, HackerNews, SecurityWeek });
 
     internal static FeedSource? Find(string? id) => Catalog.FirstOrDefault(source => source.Id == id);
 
@@ -29,14 +38,15 @@ internal sealed record FeedSource(string Id, string Name, Uri FeedUri, string Ar
         if (PublisherUrl(text) is not { } uri || !IsUnder(uri.AbsolutePath, ArticlePath)
             || (ArticleShape is not null && !ArticleShape.IsMatch(uri.AbsolutePath)))
             return null;
-        return new UriBuilder(uri) { Path = uri.AbsolutePath.TrimEnd('/') + "/", Query = "", Fragment = "" }
+        var path = uri.AbsolutePath.TrimEnd('/') + (DirectoryPermalinks ? "/" : "");
+        return new UriBuilder(uri) { Path = path, Query = "", Fragment = "" }
             .Uri.AbsoluteUri;
     }
 
     private Uri? PublisherUrl(string text)
     {
         if (text.Length > 2048 || !Uri.TryCreate(text, UriKind.Absolute, out var uri)
-            || uri.Scheme != Uri.UriSchemeHttps || uri.Host != FeedUri.Host || !uri.IsDefaultPort
+            || uri.Scheme != Uri.UriSchemeHttps || uri.Host != (ArticleHost ?? FeedUri.Host) || !uri.IsDefaultPort
             || uri.UserInfo.Length != 0 || uri.AbsolutePath.Contains("%2f", StringComparison.OrdinalIgnoreCase)
             || uri.AbsolutePath.Contains("%5c", StringComparison.OrdinalIgnoreCase))
             return null;
@@ -45,6 +55,9 @@ internal sealed record FeedSource(string Id, string Name, Uri FeedUri, string Ar
 
     private static bool IsUnder(string path, string prefix) =>
         path.StartsWith(prefix, StringComparison.Ordinal) && path.TrimEnd('/').Length >= prefix.Length;
+
+    private static Regex PathPattern(string pattern) =>
+        new(pattern, RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 }
 
 internal sealed record Article(string Url, string Source, string Title, DateTimeOffset? Published);

@@ -28,7 +28,11 @@ internal static class Dashboard
             .settings{border-top:1px solid #d6e2e6;padding-top:.75rem} .settings label{display:block;margin:.4rem 0}
             .settings button{background:#fff;color:#075565;margin-top:.5rem}
             dl{margin:.75rem 0} dt{font-weight:600} dd{margin:0 0 .45rem}
-            article{border-top:1px solid #d6e2e6;padding:1rem 0 .4rem} h3{margin:0 0 .55rem}
+            .source-card{border-top:1px solid #d6e2e6}
+            .source-card summary{cursor:pointer;padding:.75rem 0}
+            .source-name{font-size:1.04rem;font-weight:650}
+            .source-meta{display:block;margin:.24rem 0 0 1.1rem}
+            .source-actions{padding:0 .4rem .5rem 1.1rem}
             a{color:#075565} ul{list-style:none;margin:0;padding:0} li{padding:.8rem 0;border-top:1px solid #d6e2e6}
             .filters{display:flex;flex-wrap:wrap;gap:.4rem;margin:.7rem 0 1rem}
             .filters a{border:1px solid #cddbe0;border-radius:6px;padding:.3rem .55rem}
@@ -38,9 +42,15 @@ internal static class Dashboard
             <header><small>EMECWORKS / CTI</small><h1>Güvenlik haberleri</h1>
             <p>Haberler bu cihazda saklanır. <a href="#source-heading">Haber kaynaklarını yönet</a></p></header>
             """);
-        AppendArticles(html, articles, filter, sources.Any(entry => entry.State.Enabled));
-        html.Append("<section aria-labelledby=\"source-heading\"><h2 id=\"source-heading\">Haber kaynakları</h2>");
-        foreach (var (source, state) in sources)
+        int enabled = sources.Count(entry => entry.State.Enabled);
+        AppendArticles(html, articles, filter, enabled > 0);
+        html.Append($"""
+            <section aria-labelledby="source-heading"><h2 id="source-heading">Haber kaynakları</h2>
+            <p>{sources.Count} kaynak · {enabled} açık. Haber getirmek veya ayarları değiştirmek için bir kaynak seç.</p>
+            """);
+        string? expanded = notice?.Id ?? (articles.Count == 0 && filter is null
+            ? sources.FirstOrDefault(entry => entry.State.Enabled).Source?.Id : null);
+        foreach (var (source, state) in sources.OrderByDescending(entry => entry.State.Enabled))
         {
             var id = Escape(source.Id);
             var hidden = $"""
@@ -49,11 +59,19 @@ internal static class Dashboard
                 """;
             if (filter is not null)
                 hidden += $"<input type=\"hidden\" name=\"filter\" value=\"{Escape(filter.Id)}\">";
+            var last = state.LastAttemptSucceeded switch
+            {
+                true => "Son deneme başarılı",
+                false => "Son deneme başarısız",
+                null => "Henüz denenmedi"
+            };
             html.Append($"""
             <article id="source-{id}" aria-labelledby="label-{id}">
-            <h3 id="label-{id}">{Escape(source.Name)}</h3>
-            <p>{(state.Enabled ? "Kaynak açık" : "Kaynak kapalı")} ·
-              {(state.Automatic ? "Otomatik toplama açık" : "Otomatik toplama kapalı")}</p>
+            <details class="source-card"{(expanded == source.Id ? " open" : "")}>
+            <summary><span class="source-name" id="label-{id}">{Escape(source.Name)}</span>
+              <small class="source-meta">{(state.Enabled ? "Kaynak açık" : "Kaynak kapalı")} ·
+              {(state.Automatic ? "Otomatik toplama açık" : "Otomatik toplama kapalı")} · {last}</small></summary>
+            <div class="source-actions">
             <form method="post" action="/refresh">
               {hidden}
               <button type="submit"{(state.Enabled ? "" : " disabled")}>Haberleri getir</button>
@@ -77,7 +95,7 @@ internal static class Dashboard
             """);
             if (notice?.Id == source.Id && message is not null)
                 html.Append($"<p class=\"status\" role=\"status\">{Escape(message)}</p>");
-            html.Append("</article>");
+            html.Append("</div></details></article>");
         }
         return html.Append("</section></main></body></html>").ToString();
     }
