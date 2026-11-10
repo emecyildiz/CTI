@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="AngleSharp" Version="1.10.1" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.33" />
     <InternalsVisibleTo Include="CtiCore.Tests" />
   </ItemGroup>

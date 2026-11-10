@@ -17,8 +17,9 @@ and SecurityWeek start disabled. Open a row under **Haber kaynakları**
 to see its collection and settings buttons. Each row shows whether the
 source is enabled, its automatic mode, and the latest attempt result.
 Automatic collection is off until explicitly enabled for a source.
-The screen shows saved articles, not generated
-summaries. Another click does not duplicate the same article, and restarting
+The screen shows saved headlines and, where available, a short
+publisher-provided RSS description (up to 360 characters). It does not
+generate or translate summaries. Another click does not duplicate the same article, and restarting
 the process keeps what was saved. If the feed is unavailable, existing
 articles remain visible.
 
@@ -59,8 +60,11 @@ Only `/news/security/` stories from the BleepingComputer news feed are kept.
 The Hacker News feed is fetched from its reviewed FeedBurner URL, but only
 valid `thehackernews.com` article URLs are accepted as links.
 It limits response size, time and item count, forbids XML DTDs, and stores
-only canonical links, titles, sources and dates. Titles are always rendered
-as text. The panel displays at most 100 results per page.
+canonical links, titles, sources, dates and optional short excerpts. The
+description HTML is parsed locally with no browser/resource loader; markup
+and external assets are not stored or rendered. Existing rows get an excerpt
+only if the same article reappears in a normal collection; old titles and
+dates are left unchanged. The panel displays at most 100 results per page.
 
 ## Verification
 

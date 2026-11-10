@@ -60,7 +60,7 @@ internal sealed record FeedSource(string Id, string Name, Uri FeedUri, string Ar
         new(pattern, RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 }
 
-internal sealed record Article(string Url, string Source, string Title, DateTimeOffset? Published);
+internal sealed record Article(string Url, string Source, string Title, DateTimeOffset? Published, string? Excerpt = null);
 
 internal sealed class FeedClient(HttpClient http)
 {
@@ -114,10 +114,12 @@ internal sealed class FeedClient(HttpClient http)
             throw new InvalidDataException("Expected an RSS channel.");
 
         var articles = new List<Article>();
+        var excerpts = new FeedExcerpt();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         int scanned = 0, otherNews = 0;
         foreach (var item in channel.Elements("item").Take(MaximumItems))
         {
+            budget.Token.ThrowIfCancellationRequested();
             scanned++;
             var title = item.Element("title")?.Value.Trim();
             var link = item.Element("link")?.Value.Trim() ?? "";
@@ -132,7 +134,7 @@ internal sealed class FeedClient(HttpClient http)
 
             var date = DateTimeOffset.TryParse(item.Element("pubDate")?.Value, CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeUniversal, out var published) ? published.ToUniversalTime() : (DateTimeOffset?)null;
-            articles.Add(new Article(url, source.Name, title, date));
+            articles.Add(new Article(url, source.Name, title, date, excerpts.Read(item.Element("description"))));
         }
 
         if (scanned > otherNews && articles.Count == 0)

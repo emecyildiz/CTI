@@ -41,6 +41,8 @@ internal static class Dashboard
             .search-controls,.pagination{display:flex;align-items:center;flex-wrap:wrap;gap:.55rem}
             .search input{font:inherit;padding:.55rem .65rem;border-radius:6px;border:1px solid #708690;min-width:8rem;flex:1}
             .pagination{border-top:1px solid #d6e2e6;padding-top:.75rem;margin-top:.5rem}
+            .excerpt{margin:.4rem 0 0;color:#334c57;overflow-wrap:anywhere}
+            .excerpt-note{display:block;margin:.6rem 0}
             small{color:#425c68} li small{display:block;margin-top:.3rem} .status{margin:1rem 0 0;padding:.7rem;background:#e1f4f1}
             </style></head><body><main>
             <header><small>EMECWORKS / CTI</small><h1>Güvenlik haberleri</h1>
@@ -137,6 +139,8 @@ internal static class Dashboard
                     : "<p>Henüz haber yok. Başlamak için <a href=\"#source-heading\">bir kaynağı aç</a>.</p>");
         else
         {
+            if (news.Articles.Any(item => item.Excerpt is { Length: > 0 }))
+                html.Append("<small class=\"excerpt-note\">Kısa açıklamalar yayıncıların RSS akışlarından alınır.</small>");
             html.Append("<ul>");
             foreach (var item in news.Articles)
             {
@@ -149,7 +153,10 @@ internal static class Dashboard
                 var when = item.Published is { } date
                     ? " · " + date.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture)
                     : "";
-                html.Append($"<small>{Escape(item.Source + when)}</small></li>");
+                html.Append($"<small>{Escape(item.Source + when)}</small>");
+                if (item.Excerpt is { Length: > 0 } excerpt)
+                    html.Append($"<p class=\"excerpt\">{Escape(excerpt)}</p>");
+                html.Append("</li>");
             }
             html.Append("</ul>");
         }

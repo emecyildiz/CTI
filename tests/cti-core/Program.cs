@@ -143,6 +143,67 @@ try
         "Adding settings to an existing preview database preserves its articles and never opts in.");
     Console.WriteLine("PASS: first-preview SQLite upgrade preserves articles and starts in manual mode.");
 
+    const string legacyMarkup = """
+        <p>Patch&nbsp;<strong>now</strong> &amp; check.</p><p>More &lt;notes&gt;.</p>
+        <script>alert('not text')</script><style>.hidden{color:red}</style>
+        <iframe src="https://example.test/tracker">hidden frame</iframe><img src="https://example.test/pixel" onerror="alert(1)">
+        <p hidden>secret text</p><p aria-hidden="true">hidden badge</p>
+        """;
+    var longMarkup = string.Concat(Enumerable.Repeat("🙂", FeedExcerpt.MaximumMarkup));
+    int excerptPass = 0;
+    using var excerptFeed = new HttpClient(new Stub((request, _) =>
+    {
+        Require(request.RequestUri == FeedSource.Microsoft.FeedUri, "Only the RSS feed is requested, not article or asset URLs.");
+        var first = Interlocked.Increment(ref excerptPass) == 1;
+        var description = first ? legacyMarkup : "<p>The publisher changed its excerpt.</p>";
+        var missing = first ? "<template><p>not visible</p></template>" : "<p>Description became available later.</p>";
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent($"""
+                <rss><channel>
+                <item><title>Changed publisher title</title><link>https://www.microsoft.com/en-us/security/blog/legacy/</link>
+                  <description><![CDATA[{description}]]></description></item>
+                <item><title>Long excerpt</title><link>https://www.microsoft.com/en-us/security/blog/long-excerpt/</link>
+                  <description><![CDATA[{longMarkup}]]></description></item>
+                <item><title>Without excerpt</title><link>https://www.microsoft.com/en-us/security/blog/no-excerpt/</link>
+                  <description><![CDATA[{missing}]]></description></item>
+                <item><title>Nested XML excerpt</title><link>https://www.microsoft.com/en-us/security/blog/nested-description/</link>
+                  <description><p>Nested text</p><p>Other paragraph</p><script>not visible</script></description></item>
+                </channel></rss>
+                """)
+        });
+    }));
+    await using (var app = CoreApp.Create(new CoreOptions(0, legacy.FullName), excerptFeed))
+    {
+        await app.StartAsync();
+        using var browser = Browser(app.Urls.Single());
+        var beforeExcerpt = await browser.GetStringAsync("/");
+        var token = Token(beforeExcerpt);
+        Require(migrated.Latest().Single().Excerpt is null && !beforeExcerpt.Contains("class=\"excerpt\""),
+            "Existing records start with an optional, empty excerpt.");
+        Require(await Submit(browser, token) == Redirect("3"), "Backfilling an existing article does not count as a new article.");
+        var stored = migrated.Latest();
+        var preserved = stored.Single(item => item.Url.EndsWith("/legacy/", StringComparison.Ordinal));
+        var longText = stored.Single(item => item.Title == "Long excerpt").Excerpt;
+        Require(preserved is { Title: "Saved in the first preview", Published: null, Excerpt: "Patch now & check. More <notes>." }
+            && stored.Single(item => item.Title == "Nested XML excerpt").Excerpt == "Nested text Other paragraph"
+            && stored.Single(item => item.Title == "Without excerpt").Excerpt is null
+            && longText is { Length: <= FeedExcerpt.MaximumLength } && longText.EndsWith('…') && !longText.Contains('\uFFFD'),
+            "Descriptions become bounded readable text; existing article metadata and Unicode text are preserved.");
+        var page = await browser.GetStringAsync("/");
+        Require(page.Contains("class=\"excerpt-note\"") && page.Contains("Patch now &amp; check. More &lt;notes&gt;.")
+            && !page.Contains("<script>") && !page.Contains("<img") && !page.Contains("<iframe")
+            && !page.Contains("example.test") && !page.Contains("secret text") && !page.Contains("hidden badge"),
+            "The preview contains only escaped visible text, with no external assets or hidden markup.");
+        Require(await Submit(browser, token) == Redirect("0") && excerptPass == 2, "A second fetch preserves the article count.");
+        var reread = new ArticleStore(legacy.FullName).Latest();
+        Require(reread.Count == 4 && reread.Single(item => item.Url == preserved.Url).Excerpt == preserved.Excerpt
+            && reread.Single(item => item.Title == "Without excerpt").Excerpt == "Description became available later.",
+            "Refresh fills missing excerpts without replacing ones already saved.");
+        await app.StopAsync();
+    }
+    Console.WriteLine("PASS: RSS excerpt cleanup, limits, escaped rendering, old SQLite migration, and duplicate-safe backfill.");
+
     var scheduledOptions = new CoreOptions(0, Path.Combine(temp.FullName, "scheduled"));
     var clock = new TestClock(new DateTimeOffset(2026, 11, 10, 12, 0, 0, TimeSpan.Zero));
     var poll = TimeSpan.FromMilliseconds(80);
@@ -469,17 +530,24 @@ try
         using var browser = Browser(live.Urls.Single());
         var token = Token(await browser.GetStringAsync("/"));
         var store = new ArticleStore(Path.Combine(temp.FullName, "live"));
+        int totalExcerpts = 0;
         foreach (var source in FeedSource.Catalog)
         {
             if (!source.EnabledByDefault)
                 Require(await Settings(browser, token, enabled: true, automatic: false, source: source.Id) == Redirect("saved", source.Id),
                     "Opt-in to the live publisher.");
             var result = await Submit(browser, token, source: source.Id);
-            var n = store.Latest(source).Count;
+            var articles = store.Latest(source);
+            var n = articles.Count;
+            var excerpts = articles.Count(article => article.Excerpt is not null);
+            totalExcerpts += excerpts;
             Require(result == Redirect(n.ToString(System.Globalization.CultureInfo.InvariantCulture), source.Id) && n > 0,
                 "The real publisher feed loads and stores articles: " + source.Id);
-            Console.WriteLine($"PASS: {source.Id} RSS through the actual preview; {n} news records.");
+            Require(articles.All(article => article.Excerpt is null || article.Excerpt.Length <= FeedExcerpt.MaximumLength),
+                "Every live excerpt satisfies the display limit.");
+            Console.WriteLine($"PASS: {source.Id} RSS through the actual preview; {n} news records, {excerpts} with a publisher excerpt.");
         }
+        Require(totalExcerpts > 0, "At least one publisher supplied an excerpt in its RSS feed.");
         await live.StopAsync();
     }
 }

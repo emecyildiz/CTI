@@ -23,13 +23,14 @@ internal sealed class ArticleStore
         using var tx = db.BeginTransaction();
         using var cmd = db.CreateCommand();
         cmd.Transaction = tx;
-        cmd.CommandText = """
+        cmd.CommandText = $"""
             CREATE TABLE IF NOT EXISTS articles (
                 url TEXT PRIMARY KEY NOT NULL,
                 source TEXT NOT NULL,
                 title TEXT NOT NULL,
                 published_unix INTEGER,
-                first_seen_unix INTEGER NOT NULL
+                first_seen_unix INTEGER NOT NULL,
+                excerpt TEXT CHECK (excerpt IS NULL OR length(excerpt) <= {FeedExcerpt.MaximumLength})
             );
             CREATE INDEX IF NOT EXISTS ix_articles_newest
                 ON articles (coalesce(published_unix, first_seen_unix) DESC, url);
@@ -47,6 +48,12 @@ internal sealed class ArticleStore
             );
             """;
         cmd.ExecuteNonQuery();
+        cmd.CommandText = "SELECT 1 FROM pragma_table_info('articles') WHERE name = 'excerpt';";
+        if (cmd.ExecuteScalar() is null)
+        {
+            cmd.CommandText = $"ALTER TABLE articles ADD COLUMN excerpt TEXT CHECK (excerpt IS NULL OR length(excerpt) <= {FeedExcerpt.MaximumLength});";
+            cmd.ExecuteNonQuery();
+        }
         cmd.CommandText = """
             INSERT INTO source_state (source_id, enabled, automatic) VALUES ($source, $enabled, 0)
             ON CONFLICT (source_id) DO NOTHING;
@@ -134,15 +141,25 @@ internal sealed class ArticleStore
         using var cmd = db.CreateCommand();
         cmd.Transaction = tx;
         cmd.CommandText = """
-            INSERT INTO articles (url, source, title, published_unix, first_seen_unix)
-            VALUES ($url, $source, $title, $published, $seen)
+            INSERT INTO articles (url, source, title, published_unix, first_seen_unix, excerpt)
+            VALUES ($url, $source, $title, $published, $seen, $excerpt)
             ON CONFLICT (url) DO NOTHING;
             """;
         var url = cmd.Parameters.Add("$url", SqliteType.Text);
         var source = cmd.Parameters.Add("$source", SqliteType.Text);
         var title = cmd.Parameters.Add("$title", SqliteType.Text);
         var published = cmd.Parameters.Add("$published", SqliteType.Integer);
+        var excerpt = cmd.Parameters.Add("$excerpt", SqliteType.Text);
         cmd.Parameters.AddWithValue("$seen", finished.ToUnixTimeSeconds());
+        using var fill = db.CreateCommand();
+        fill.Transaction = tx;
+        fill.CommandText = """
+            UPDATE articles SET excerpt = $excerpt
+            WHERE url = $url AND source = $source AND excerpt IS NULL;
+            """;
+        var fillUrl = fill.Parameters.Add("$url", SqliteType.Text);
+        var fillSource = fill.Parameters.Add("$source", SqliteType.Text);
+        var fillExcerpt = fill.Parameters.Add("$excerpt", SqliteType.Text);
         int added = 0;
         foreach (var article in articles)
         {
@@ -150,7 +167,16 @@ internal sealed class ArticleStore
             source.Value = article.Source;
             title.Value = article.Title;
             published.Value = article.Published is { } date ? date.ToUnixTimeSeconds() : DBNull.Value;
-            added += cmd.ExecuteNonQuery();
+            excerpt.Value = article.Excerpt is { Length: > 0 } text ? text : DBNull.Value;
+            int inserted = cmd.ExecuteNonQuery();
+            added += inserted;
+            if (inserted == 0 && excerpt.Value is string missingText)
+            {
+                fillUrl.Value = article.Url;
+                fillSource.Value = article.Source;
+                fillExcerpt.Value = missingText;
+                fill.ExecuteNonQuery();
+            }
         }
         return added;
     }
@@ -159,7 +185,7 @@ internal sealed class ArticleStore
     {
         using var db = Open();
         using var cmd = db.CreateCommand();
-        const string select = "SELECT url, source, title, published_unix FROM articles";
+        const string select = "SELECT url, source, title, published_unix, excerpt FROM articles";
         const string newest = " ORDER BY coalesce(published_unix, first_seen_unix) DESC, url LIMIT $take OFFSET $skip;";
         var where = new List<string>(2);
         // Earlier previews already use the catalog's exact display name as the stored source.
@@ -184,7 +210,8 @@ internal sealed class ArticleStore
         var result = new List<Article>();
         while (rows.Read())
             result.Add(new Article(rows.GetString(0), rows.GetString(1), rows.GetString(2),
-                rows.IsDBNull(3) ? null : DateTimeOffset.FromUnixTimeSeconds(rows.GetInt64(3))));
+                rows.IsDBNull(3) ? null : DateTimeOffset.FromUnixTimeSeconds(rows.GetInt64(3)),
+                rows.IsDBNull(4) ? null : rows.GetString(4)));
         bool extra = result.Count > NewsQuery.PageSize;
         if (extra) result.RemoveAt(result.Count - 1);
         return new(result, extra && query.Page < NewsQuery.MaxPage);
