@@ -1,5 +1,4 @@
 using System.Net;
-using System.Xml;
 using System.Xml.Linq;
 using CtiCore;
 using Microsoft.AspNetCore.Antiforgery;
@@ -46,7 +45,8 @@ namespace CtiCore
 
     internal static class CoreApp
     {
-        public static WebApplication Create(CoreOptions options, HttpClient publisher)
+        public static WebApplication Create(CoreOptions options, HttpClient publisher,
+            TimeProvider? clock = null, TimeSpan? pollInterval = null)
         {
             var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });
             builder.WebHost.ConfigureKestrel(k =>
@@ -64,12 +64,13 @@ namespace CtiCore
                 o.Cookie.SecurePolicy = CookieSecurePolicy.None; // This preview uses loopback HTTP only.
             });
             builder.Services.AddDataProtection().AddKeyManagementOptions(o => o.XmlRepository = new MemoryKeyRepository());
+            builder.Services.AddSingleton(new ArticleStore(options.DataDirectory));
+            builder.Services.AddSingleton(new FeedClient(publisher));
+            builder.Services.AddSingleton(clock ?? TimeProvider.System);
+            builder.Services.AddSingleton<CollectionCoordinator>();
+            builder.Services.AddHostedService(sp => new AutomaticCollector(
+                sp.GetRequiredService<CollectionCoordinator>(), pollInterval ?? TimeSpan.FromMinutes(1)));
             var app = builder.Build();
-            var store = new ArticleStore(options.DataDirectory);
-            var feed = new FeedClient(publisher);
-            // Dispose the refresh gate only when the host is stopped, not when Create returns.
-            var refreshGate = new SemaphoreSlim(1, 1);
-            app.Lifetime.ApplicationStopped.Register(refreshGate.Dispose);
 
             app.Use(async (ctx, next) =>
             {
@@ -88,7 +89,7 @@ namespace CtiCore
                 await next(ctx);
             });
 
-            app.MapGet("/", (HttpContext ctx, IAntiforgery antiforgery) =>
+            app.MapGet("/", (HttpContext ctx, IAntiforgery antiforgery, ArticleStore store) =>
             {
                 var token = antiforgery.GetAndStoreTokens(ctx);
                 var status = ctx.Request.Query["status"].ToString();
@@ -96,14 +97,17 @@ namespace CtiCore
                 {
                     "busy" => "Haberler zaten getiriliyor. Biraz sonra tekrar dene.",
                     "failed" => "Kaynak şu anda okunamadı. Kayıtlı haberlerin duruyor.",
-                    "storage" => "Haberler kaydedilemedi. Biraz sonra tekrar dene.",
+                    "storage" => "Değişiklik kaydedilemedi. Biraz sonra tekrar dene.",
+                    "saved" => "Toplama ayarları kaydedildi.",
+                    "disabled" => "Kaynak kapalı. Haber getirmek için önce kaynağı aç.",
+                    "changed" => "Toplama sırasında ayarlar değişti. Bu denemenin sonucu kaydedilmedi.",
                     _ => int.TryParse(status, out int n) && n is >= 0 and <= FeedClient.MaximumItems
                         ? n == 0 ? "Yeni haber yok. Aynı haberler tekrar eklenmedi." : $"{n} yeni haber eklendi."
                         : null
                 };
                 try
                 {
-                    return Results.Content(Dashboard.Render(store.Latest(), token, message), "text/html; charset=utf-8");
+                    return Results.Content(Dashboard.Render(store.Latest(), store.ReadSource(), token, message), "text/html; charset=utf-8");
                 }
                 catch (SqliteException)
                 {
@@ -111,43 +115,53 @@ namespace CtiCore
                 }
             });
 
-            app.MapPost("/refresh", async (HttpContext ctx, IAntiforgery antiforgery) =>
+            app.MapPost("/refresh", async (HttpContext ctx, IAntiforgery antiforgery, CollectionCoordinator collection) =>
             {
-                if (!string.Equals(ctx.Request.Headers.Origin.ToString(), Origin(ctx), StringComparison.Ordinal)
-                    || ctx.Request.ContentType?.Split(';')[0] != "application/x-www-form-urlencoded")
+                if (await ReadSourceForm(ctx, antiforgery) is null)
+                    return Results.BadRequest();
+                return SeeOther(ctx, await collection.Refresh(automatic: false, ctx.RequestAborted));
+            });
+
+            app.MapPost("/settings/source", async (HttpContext ctx, IAntiforgery antiforgery, ArticleStore store) =>
+            {
+                var form = await ReadSourceForm(ctx, antiforgery);
+                if (form is null || !ReadCheckbox(form, "enabled", out var enabled)
+                    || !ReadCheckbox(form, "automatic", out var automatic))
                     return Results.BadRequest();
                 try
                 {
-                    await antiforgery.ValidateRequestAsync(ctx);
-                    var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
-                    if (form["source"].Count != 1 || form["source"][0] != FeedSource.Microsoft.Id)
-                        return Results.BadRequest();
-                }
-                catch (AntiforgeryValidationException) { return Results.BadRequest(); }
-                catch (InvalidDataException) { return Results.BadRequest(); }
-
-                if (!await refreshGate.WaitAsync(0, ctx.RequestAborted))
-                    return SeeOther(ctx, "busy");
-                try
-                {
-                    var news = await feed.Read(FeedSource.Microsoft, ctx.RequestAborted);
-                    ctx.RequestAborted.ThrowIfCancellationRequested();
-                    return SeeOther(ctx, store.Save(news).ToString(System.Globalization.CultureInfo.InvariantCulture));
-                }
-                catch (Exception ex) when ((ex is HttpRequestException or InvalidDataException or IOException or XmlException
-                    or OperationCanceledException) && !ctx.RequestAborted.IsCancellationRequested)
-                {
-                    app.Logger.LogWarning("Reviewed RSS feed could not be fetched or parsed ({Type}).", ex.GetType().Name);
-                    return SeeOther(ctx, "failed");
+                    store.SetCollectionPolicy(enabled, automatic);
+                    return SeeOther(ctx, "saved");
                 }
                 catch (SqliteException)
                 {
-                    app.Logger.LogWarning("Could not save articles to the local SQLite file.");
+                    app.Logger.LogWarning("Could not save local CTI collection settings.");
                     return SeeOther(ctx, "storage");
                 }
-                finally { refreshGate.Release(); }
             });
             return app;
+        }
+
+        private static async Task<IFormCollection?> ReadSourceForm(HttpContext ctx, IAntiforgery antiforgery)
+        {
+            if (!string.Equals(ctx.Request.Headers.Origin.ToString(), Origin(ctx), StringComparison.Ordinal)
+                || ctx.Request.ContentType?.Split(';')[0] != "application/x-www-form-urlencoded")
+                return null;
+            try
+            {
+                await antiforgery.ValidateRequestAsync(ctx);
+                var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
+                return form["source"].Count == 1 && form["source"][0] == FeedSource.Microsoft.Id ? form : null;
+            }
+            catch (AntiforgeryValidationException) { return null; }
+            catch (InvalidDataException) { return null; }
+        }
+
+        private static bool ReadCheckbox(IFormCollection form, string name, out bool value)
+        {
+            var values = form[name];
+            value = values.Count == 1 && values[0] == "on";
+            return values.Count == 0 || value;
         }
 
         private static string Origin(HttpContext ctx) => $"http://127.0.0.1:{ctx.Connection.LocalPort}";

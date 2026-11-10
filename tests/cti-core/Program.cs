@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.RegularExpressions;
 using CtiCore;
+using Microsoft.Data.Sqlite;
 
 const string fixture = """
     <rss version="2.0"><channel>
@@ -95,6 +96,134 @@ try
     }
     Console.WriteLine("PASS: loopback HTTP, form guards, allowlist, redirect/DTD/oversize rejection, concurrent refresh, SQLite dedup and restart.");
 
+    var legacy = Directory.CreateDirectory(Path.Combine(temp.FullName, "previous-preview"));
+    using (var db = new SqliteConnection(new SqliteConnectionStringBuilder
+    {
+        DataSource = Path.Combine(legacy.FullName, "articles.sqlite3"), Pooling = false
+    }.ToString()))
+    {
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            CREATE TABLE articles (
+                url TEXT PRIMARY KEY NOT NULL, source TEXT NOT NULL, title TEXT NOT NULL,
+                published_unix INTEGER, first_seen_unix INTEGER NOT NULL
+            );
+            INSERT INTO articles VALUES (
+                'https://www.microsoft.com/en-us/security/blog/legacy/', 'Microsoft Security Blog',
+                'Saved in the first preview', NULL, 0
+            );
+            """;
+        cmd.ExecuteNonQuery();
+    }
+    var migrated = new ArticleStore(legacy.FullName);
+    Require(migrated.ReadSource() is { Enabled: true, Automatic: false, LastAttempt: null }
+        && migrated.Latest().Single().Title == "Saved in the first preview",
+        "Adding settings to an existing preview database preserves its articles and never opts in.");
+    Console.WriteLine("PASS: first-preview SQLite upgrade preserves articles and starts in manual mode.");
+
+    var scheduledOptions = new CoreOptions(0, Path.Combine(temp.FullName, "scheduled"));
+    var clock = new TestClock(new DateTimeOffset(2026, 11, 10, 12, 0, 0, TimeSpan.Zero));
+    var poll = TimeSpan.FromMilliseconds(80);
+    var scheduleStore = new ArticleStore(scheduledOptions.DataDirectory);
+    var scheduleMode = 0;
+    var requested = 0;
+    var inFlight = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var allowCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    using var scheduleFeed = new HttpClient(new Stub(async (_, ct) =>
+    {
+        Interlocked.Increment(ref requested);
+        var attemptMode = Volatile.Read(ref scheduleMode);
+        if (attemptMode == 1) return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        if (attemptMode == 2)
+        {
+            inFlight.TrySetResult();
+            await allowCompletion.Task.WaitAsync(ct);
+        }
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(attemptMode == 2
+                ? fixture.Replace("/example", "/in-flight", StringComparison.Ordinal)
+                : fixture)
+        };
+    }));
+    await using (var app = CoreApp.Create(scheduledOptions, scheduleFeed, clock, poll))
+    {
+        await app.StartAsync();
+        using var browser = Browser(app.Urls.Single());
+        var page = await browser.GetStringAsync("/");
+        var token = Token(page);
+        await Task.Delay(poll * 4);
+        Require(requested == 0 && page.Contains("Otomatik toplama kapalı"), "Automatic collection is off on a fresh install.");
+        Require((await Settings(browser, token, enabled: true, automatic: true, origin: "http://outside.test")).Status == 400
+            && (await Settings(browser, "invalid", enabled: true, automatic: true)).Status == 400
+            && (await Settings(browser, token, enabled: true, automatic: true, source: "unlisted")).Status == 400
+            && !scheduleStore.ReadSource().Automatic, "Settings rejects cross-origin, missing token, and unsupported sources.");
+        Require((await Submit(browser, token, path: "/settings/source", fields: [new("enabled", "on"), new("enabled", "off")])).Status == 400,
+            "Ambiguous checkbox values are rejected.");
+        Require(await Settings(browser, token, enabled: true, automatic: true) == (303, "/?status=saved"), "Automatic collection opt-in saves.");
+        await WaitUntil(() => Task.FromResult(scheduleStore.ReadSource().LastSuccess == clock.GetUtcNow()), "First automatic attempt");
+        var success = scheduleStore.ReadSource();
+        page = await browser.GetStringAsync("/");
+        Require(success is { LastAttemptSucceeded: true, LastAdded: 1 } && scheduleStore.Latest().Count == 1
+            && page.Contains("Son başarılı toplama") && page.Contains("10.11.2026 12:00 UTC") && requested == 1,
+            "Automatic collection stores articles, result and displayed timestamp.");
+
+        clock.Advance(TimeSpan.FromMinutes(59));
+        await Task.Delay(poll * 4);
+        Require(requested == 1, "Automatic collection does not run before the interval.");
+        Volatile.Write(ref scheduleMode, 1);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await WaitUntil(() => Task.FromResult(scheduleStore.ReadSource().LastAttemptSucceeded == false), "Scheduled failure");
+        var failure = scheduleStore.ReadSource();
+        page = await browser.GetStringAsync("/");
+        Require(failure.LastAttempt == clock.GetUtcNow() && failure.LastSuccess == success.LastSuccess
+            && failure.LastAdded is null && scheduleStore.Latest().Count == 1
+            && page.Contains("Önceden kaydedilen haberler duruyor."),
+            "A failed collection preserves both saved articles and the last successful time.");
+        await app.StopAsync();
+    }
+    await using (var app = CoreApp.Create(scheduledOptions, scheduleFeed, clock, poll))
+    {
+        await app.StartAsync();
+        using var browser = Browser(app.Urls.Single());
+        var token = Token(await browser.GetStringAsync("/"));
+        await Task.Delay(poll * 4);
+        Require(requested == 2 && scheduleStore.ReadSource() is { Automatic: true, LastAttemptSucceeded: false },
+            "Schedule and failed-attempt cooldown survive restart.");
+        Volatile.Write(ref scheduleMode, 2);
+        clock.Advance(TimeSpan.FromHours(1));
+        await inFlight.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var disabledAt = scheduleStore.ReadSource().LastAttempt;
+        try
+        {
+            Require(await Settings(browser, token, enabled: false, automatic: true) == (303, "/?status=saved"),
+                "Turning off the source also turns off automatic collection.");
+        }
+        finally { allowCompletion.TrySetResult(); }
+        await WaitUntil(async () => await Submit(browser, token) == (303, "/?status=disabled"), "In-flight request released");
+        Require(scheduleStore.ReadSource() is { Enabled: false, Automatic: false } disabled
+            && disabled.LastAttempt == disabledAt && scheduleStore.Latest().Count == 1,
+            "A disabled source cannot fetch manually or commit an in-flight result.");
+        await app.StopAsync();
+    }
+    await using (var app = CoreApp.Create(scheduledOptions, scheduleFeed, clock, poll))
+    {
+        await app.StartAsync();
+        using var browser = Browser(app.Urls.Single());
+        var page = await browser.GetStringAsync("/");
+        var token = Token(page);
+        clock.Advance(TimeSpan.FromHours(3));
+        await Task.Delay(poll * 4);
+        Require(requested == 3 && page.Contains("Kaynak kapalı") && page.Contains("<button type=\"submit\" disabled>"),
+            "Disabled state and articles survive restart without a new request.");
+        Volatile.Write(ref scheduleMode, 0);
+        Require(await Settings(browser, token, enabled: true, automatic: false) == (303, "/?status=saved")
+            && await Submit(browser, token) == (303, "/?status=0"), "Manual collection works with automatic collection off.");
+        await app.StopAsync();
+    }
+    Console.WriteLine("PASS: opt-in scheduler, hourly interval, persisted status and settings, and in-flight disable protection.");
+
     if (args.SequenceEqual(new[] { "--live-feed" }))
     {
         using var publisher = new HttpClient(FeedClient.CreateTransport());
@@ -133,18 +262,47 @@ static string Token(string page)
 static HttpClient Browser(string address) =>
     new(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false }) { BaseAddress = new Uri(address) };
 
-static async Task<(int Status, string? Redirect)> Submit(HttpClient browser, string token,
-    string source = "microsoft-security", string? origin = null, bool omitOrigin = false)
+static Task<(int Status, string? Redirect)> Settings(HttpClient browser, string token, bool enabled, bool automatic,
+    string? origin = null, string source = "microsoft-security")
 {
-    using var request = new HttpRequestMessage(HttpMethod.Post, "/refresh")
+    var fields = new List<KeyValuePair<string, string>>();
+    if (enabled) fields.Add(new("enabled", "on"));
+    if (automatic) fields.Add(new("automatic", "on"));
+    return Submit(browser, token, source, origin, path: "/settings/source", fields: fields);
+}
+
+static async Task<(int Status, string? Redirect)> Submit(HttpClient browser, string token,
+    string source = "microsoft-security", string? origin = null, bool omitOrigin = false,
+    string path = "/refresh", IEnumerable<KeyValuePair<string, string>>? fields = null)
+{
+    List<KeyValuePair<string, string>> values = [new("source", source), new("__RequestVerificationToken", token)];
+    if (fields is not null) values.AddRange(fields);
+    using var request = new HttpRequestMessage(HttpMethod.Post, path)
     {
-        Content = new FormUrlEncodedContent(new Dictionary<string, string>
-            { ["source"] = source, ["__RequestVerificationToken"] = token })
+        Content = new FormUrlEncodedContent(values)
     };
     if (!omitOrigin) request.Headers.TryAddWithoutValidation("Origin",
         origin ?? browser.BaseAddress!.GetLeftPart(UriPartial.Authority));
     using var response = await browser.SendAsync(request);
     return ((int)response.StatusCode, response.Headers.Location?.OriginalString);
+}
+
+static async Task WaitUntil(Func<Task<bool>> completed, string scenario)
+{
+    var time = System.Diagnostics.Stopwatch.StartNew();
+    while (time.Elapsed < TimeSpan.FromSeconds(5))
+    {
+        if (await completed()) return;
+        await Task.Delay(25);
+    }
+    throw new InvalidOperationException($"Timed out: {scenario}.");
+}
+
+sealed class TestClock(DateTimeOffset start) : TimeProvider
+{
+    private long ticks = start.UtcTicks;
+    public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref ticks), TimeSpan.Zero);
+    public void Advance(TimeSpan duration) => Interlocked.Add(ref ticks, duration.Ticks);
 }
 
 sealed class Stub(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler

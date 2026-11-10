@@ -11,11 +11,25 @@ dotnet run --project app/cti-core -- --port 8091
 ```
 
 Open **http://127.0.0.1:8091** and click **Haberleri getir**. The first
-click reads the Microsoft Security Blog feed; startup itself does not
-contact the publisher. The screen shows saved articles, not generated
+click reads the Microsoft Security Blog feed. Automatic collection is off
+until explicitly enabled. The screen shows saved articles, not generated
 summaries. Another click does not duplicate the same article, and restarting
 the process keeps what was saved. If the feed is unavailable, existing
 articles remain visible.
+
+Under **Haber kaynağı**, choose **Otomatik toplamayı aç** and save to check
+the feed about once an hour while CTI is running. The first check runs on
+the next minute tick unless a manual or automatic attempt already finished
+in the past hour. A failed attempt also waits about an hour before an
+automatic retry; manual refresh remains available. The page shows the
+last attempt, its result, and the last success separately (UTC). An error
+does not erase the last success.
+
+Unchecking **Bu kaynaktan haber topla** and saving stops new automatic
+and manual checks for that source. If a request was already sent, it may
+finish, but its result is not saved if the setting changed in flight.
+Already saved articles are not removed. Source and scheduling preferences
+persist across restarts. Run one CTI process per data directory.
 
 Data defaults to `Emecworks/CTI-Core` under the current user's local
 application data directory. Pass `--data-dir PATH` to use another directory.
@@ -38,7 +52,6 @@ dotnet run --project tests/cti-core --configuration Release
 dotnet run --project tests/cti-core --configuration Release -- --live-feed
 ```
 
-Next increment: add opt-in periodic collection, persist enabled sources and
-show last success/failure in plain language. Expand the reviewed catalog
-only after the first end-to-end path is stable. AI summaries and Telegram
+Next increment: expand the reviewed source catalog and test independent
+settings and failure handling for each source. AI summaries and Telegram
 stay optional; installer and authenticated server packaging are later work.
