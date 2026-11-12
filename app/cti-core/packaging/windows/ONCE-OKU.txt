@@ -1,0 +1,23 @@
+EMECWORKS / Public CTI — Windows x64 önizlemesi
+
+1. ZIP arşivini bir klasöre çıkar.
+2. START-CTI.cmd dosyasına çift tıkla. Yerel panel tarayıcıda açılır.
+   Açılmazsa tarayıcıya http://127.0.0.1:8091/ yaz.
+3. Microsoft Security Blog altında "Haberleri getir" ile başlayabilirsin.
+4. CTI'yi durdurmak için konsolda Ctrl+C kullan.
+
+Kurulum, yönetici izni, Docker, ayrı .NET kurulumu veya AI anahtarı gerekmez.
+Program Windows hizmeti kurmaz. Bu paket imzalanmamış bir geliştirme
+önizlemesidir; yayımlanmış bir kararlı sürüm değildir.
+Kaynak kodu: https://github.com/emecyildiz/CTI/tree/public-core/rss-first
+
+Haberler ve ayarlar: %LOCALAPPDATA%\Emecworks\CTI-Core
+ZIP'i başka klasöre açmak verileri taşımaz veya silmez. Programı kapattıktan
+sonra bu dosyaları kaldırmak veritabanını silmez. Kişisel sunucuya bağlanmaz.
+
+8091 kullanımdaysa, bu klasörde terminal açıp farklı bir port seç:
+    .\CTI-Core.exe --port 8092 --open-browser
+
+Gemini isteğe bağlıdır. Anahtar verilmedikçe AI kapalıdır. Varsayılan olarak
+yeni haber toplama ve özetleme için kendiliğinden dış istek gönderilmez;
+elle haber toplama veya kaynak bazında otomatik toplamayı açmak gerekir.

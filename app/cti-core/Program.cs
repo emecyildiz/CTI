@@ -1,4 +1,7 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Xml.Linq;
 using CtiCore;
 using Microsoft.AspNetCore.Antiforgery;
@@ -6,6 +9,16 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.DataProtection.Repositories;
 using Microsoft.Data.Sqlite;
 
+if (args is ["--version"])
+{
+    Console.WriteLine($"CTI Core preview / {RuntimeInformation.FrameworkDescription} / {RuntimeInformation.ProcessArchitecture}");
+    return;
+}
+if (args is ["--help"] or ["-h"])
+{
+    Console.WriteLine(CoreOptions.Usage);
+    return;
+}
 var settings = CoreOptions.Parse(args);
 using var transport = FeedClient.CreateTransport();
 using var http = new HttpClient(transport);
@@ -14,27 +27,55 @@ var gemini = GeminiSettings.Read(Environment.GetEnvironmentVariable("CTI_GEMINI_
 using var aiHttp = gemini is null ? null : new HttpClient(FeedClient.CreateTransport());
 await using var app = CoreApp.Create(settings, http,
     summaryClient: gemini is not null && aiHttp is not null ? new GeminiSummaryClient(aiHttp, gemini) : null);
+if (settings.OpenBrowser)
+{
+    app.Lifetime.ApplicationStarted.Register(() =>
+    {
+        try
+        {
+            using var browser = Process.Start(new ProcessStartInfo
+            {
+                FileName = $"http://127.0.0.1:{settings.Port}/",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or PlatformNotSupportedException)
+        {
+            app.Logger.LogWarning("Tarayıcı açılamadı. Bu penceredeki yerel CTI adresini tarayıcıya yazabilirsin.");
+        }
+    });
+}
 await app.RunAsync();
 
 namespace CtiCore
 {
-    internal sealed record CoreOptions(int Port, string DataDirectory)
+    internal sealed record CoreOptions(int Port, string DataDirectory, bool OpenBrowser = false)
     {
+        internal const string Usage = "Usage: [--port 8091] [--data-dir PATH] [--open-browser] | --version | --help";
+
         internal static CoreOptions Parse(string[] args)
         {
             const int defaultPort = 8091;
             int port = defaultPort;
             string? data = null;
-            for (int i = 0; i < args.Length; i += 2)
+            bool openBrowser = false;
+            for (int i = 0; i < args.Length; i++)
             {
+                string option = args[i];
+                if (option == "--open-browser")
+                {
+                    openBrowser = true;
+                    continue;
+                }
                 if (i + 1 == args.Length)
-                    throw new ArgumentException("Usage: [--port 8091] [--data-dir PATH]");
-                if (args[i] == "--port" && int.TryParse(args[i + 1], out var value) && value is >= 1024 and <= 65535)
-                    port = value;
-                else if (args[i] == "--data-dir" && !string.IsNullOrWhiteSpace(args[i + 1]))
-                    data = Path.GetFullPath(args[i + 1]);
+                    throw new ArgumentException(Usage);
+                string value = args[++i];
+                if (option == "--port" && int.TryParse(value, out var parsedPort) && parsedPort is >= 1024 and <= 65535)
+                    port = parsedPort;
+                else if (option == "--data-dir" && !string.IsNullOrWhiteSpace(value) && !value.StartsWith("--", StringComparison.Ordinal))
+                    data = Path.GetFullPath(value);
                 else
-                    throw new ArgumentException("Usage: [--port 8091] [--data-dir PATH]");
+                    throw new ArgumentException(Usage);
             }
             if (data is null)
             {
@@ -43,7 +84,7 @@ namespace CtiCore
                     throw new InvalidOperationException("Specify --data-dir for this account.");
                 data = Path.Combine(local, "Emecworks", "CTI-Core");
             }
-            return new CoreOptions(port, data);
+            return new CoreOptions(port, data, openBrowser);
         }
     }
 

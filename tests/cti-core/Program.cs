@@ -32,6 +32,10 @@ const string securityNews = """
 var temp = Directory.CreateTempSubdirectory("emecworks-cti-core-test-");
 try
 {
+    var launch = CoreOptions.Parse(["--open-browser", "--data-dir", temp.FullName, "--port", "8092"]);
+    Require(launch is { OpenBrowser: true, Port: 8092 } && launch.DataDirectory == temp.FullName
+        && !CoreOptions.Parse(["--data-dir", temp.FullName]).OpenBrowser,
+        "The portable launcher can open the browser explicitly; normal CLI startup remains headless.");
     var mode = "normal";
     int fetched = 0;
     var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -3,12 +3,34 @@
 This is a separate public CTI development preview. It does not install,
 migrate, or read an rc.10 installation and does not use the private VPS.
 
-From the repository root, with the .NET 8 SDK or later and the .NET 8
+From the repository root, with the .NET 10 SDK or later and the .NET 10
 ASP.NET Core runtime installed:
 
 ```sh
 dotnet run --project app/cti-core -- --port 8091
 ```
+
+### Windows x64 preview ZIP
+
+On Windows, build an unsigned, self-contained ZIP with the .NET 10 SDK:
+
+```powershell
+.\scripts\build-cti-core-preview.ps1
+```
+
+The script unpacks the result, starts the included executable against a
+temporary data directory and checks the panel, embedded runtime and SQLite
+before writing the ZIP and SHA-256 file to `dist/cti-core-preview`. To build
+with a workspace-local SDK, pass its `dotnet.exe` using `-DotnetExe`.
+
+To run the ZIP, extract it and double-click **START-CTI.cmd**. It opens the
+loopback panel in the default browser after CTI starts. It requires no
+installer, separate .NET runtime, Docker, or administrator access. Use
+Ctrl+C in its console to stop. For a custom port, run
+`CTI-Core.exe --port 8092 --open-browser` instead. No server-side deployment,
+release signing or background Windows service is included.
+
+### Using the panel
 
 Open **http://127.0.0.1:8091** and click **Haberleri getir** on a source.
 Microsoft Security Blog is initially enabled for manual collection.
