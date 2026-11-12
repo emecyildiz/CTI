@@ -1,0 +1,75 @@
+name: Validate CTI Core preview
+
+on:
+  push:
+    branches: ['public-core/rss-first']
+    paths:
+      - 'app/cti-core/**'
+      - 'tests/cti-core/**'
+      - 'scripts/build-cti-core-preview.ps1'
+      - '.github/workflows/cti-core-validation.yml'
+      - 'LICENSE'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cti-core-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+
+jobs:
+  validate:
+    name: Preview checks / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        id: setup
+        with:
+          dotnet-version: '10.0.x'
+      - name: Select the installed .NET 10 SDK
+        shell: pwsh
+        env:
+          CTI_SDK_VERSION: ${{ steps.setup.outputs.dotnet-version }}
+        run: |
+          if ($env:CTI_SDK_VERSION -notmatch '^10\.0\.\d+$') { throw 'Unexpected .NET SDK version.' }
+          $sdkDirectory = Join-Path $env:RUNNER_TEMP 'cti-core-sdk'
+          New-Item -ItemType Directory -Path $sdkDirectory | Out-Null
+          Set-Location -LiteralPath $sdkDirectory
+          dotnet new globaljson --sdk-version $env:CTI_SDK_VERSION --roll-forward disable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $actual = dotnet --version
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:CTI_SDK_VERSION) { throw 'Could not select .NET 10.' }
+      - name: Build and run local fixture tests
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/cti-core-sdk
+        run: |
+          $project = Join-Path $env:GITHUB_WORKSPACE 'tests/cti-core/CtiCore.Tests.csproj'
+          dotnet build $project -c Release --warnaserror -p:NuGetAuditMode=all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project $project -c Release --no-build --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build and smoke-test the Windows ZIP
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/cti-core-sdk
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE 'scripts/build-cti-core-preview.ps1'
+          $output = Join-Path $env:RUNNER_TEMP 'cti-core-preview'
+          & $script -OutputDirectory $output
+          $zip = Join-Path $output 'CTI-Core-Windows-x64-preview.zip'
+          $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+          $expected = ((Get-Content -LiteralPath "$zip.sha256") -split '\s+')[0]
+          if ($actual -ne $expected) { throw 'Preview ZIP checksum does not match.' }
+          Write-Host 'PASS: verified preview ZIP and SHA-256; no upload or release.'

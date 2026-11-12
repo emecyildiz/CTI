@@ -127,3 +127,11 @@ The first security catalog has five reviewed sources. The default test
 suite exercises Gemini with a mock HTTP provider and does not require a
 key. Additional topic catalogs, Telegram, installer and authenticated
 server packaging are later work.
+
+On the development branch, **Validate CTI Core preview** runs these
+fixture tests on Windows x64 and Ubuntu x64 when Core files change.
+The Windows job also unpacks and starts a freshly built preview ZIP and
+verifies its checksum. This workflow is independent of the original CTI
+installer workflows; it does not contact live RSS or Gemini, upload a
+binary, or create a GitHub Release. The interactive launcher and first-use
+experience still need a person to test them.
