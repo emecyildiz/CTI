@@ -5,8 +5,8 @@ namespace CtiCore;
 
 internal sealed record NewsQuery(FeedSource? Source, string Title, int Page)
 {
-    public const int PageSize = 100;
-    public const int MaxPage = 1000;
+    public const int PageSize = 12;
+    public const int MaxPage = 10_000;
     public const int MaxTitleLength = 120;
 
     public static bool TryRead(StringValues filters, StringValues titles, StringValues pages, out NewsQuery query)
@@ -35,4 +35,4 @@ internal sealed record NewsQuery(FeedSource? Source, string Title, int Page)
     }
 }
 
-internal sealed record NewsPage(IReadOnlyList<Article> Articles, bool HasNext);
+internal sealed record NewsPage(IReadOnlyList<Article> Articles, int TotalPages);

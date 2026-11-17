@@ -141,7 +141,9 @@ namespace CtiCore
             app.MapGet("/", (HttpContext ctx, IAntiforgery antiforgery, ArticleStore store, SummaryCoordinator summaries) =>
             {
                 var values = ctx.Request.Query;
-                if (!NewsQuery.TryRead(values["filter"], values["q"], values["page"], out var query))
+                var chosenView = values["view"];
+                if (!NewsQuery.TryRead(values["filter"], values["q"], values["page"], out var query)
+                    || chosenView.Count > 1 || (chosenView.Count == 1 && chosenView[0] is not ("news" or "sources" or "settings")))
                     return Results.BadRequest();
                 var token = antiforgery.GetAndStoreTokens(ctx);
                 var status = ctx.Request.Query["status"].ToString();
@@ -161,6 +163,14 @@ namespace CtiCore
                 {
                     var notice = FeedSource.Find(ctx.Request.Query["source"].ToString());
                     var sources = FeedSource.Catalog.Select(source => (source, store.ReadSource(source))).ToArray();
+                    string view = chosenView.Count == 1 ? chosenView[0]! : notice is not null ? "sources" : "news";
+                    var appearanceMessage = values["appearance"].ToString() switch
+                    {
+                        "saved" => "Menü tercihi kaydedildi.",
+                        "reset" => "Varsayılan yazı geri yüklendi.",
+                        "storage" => "Görünüm tercihi kaydedilemedi. Tekrar dene.",
+                        _ => null
+                    };
                     var summaryMessage = values["ai"].ToString() switch
                     {
                         "saved" => "Türkçe AI özeti yerel olarak kaydedildi.",
@@ -174,7 +184,7 @@ namespace CtiCore
                         _ => null
                     };
                     return Results.Content(Dashboard.Render(store.ReadNews(query), sources, token, notice, message, query,
-                        summaries.Enabled, summaryMessage),
+                        summaries.Enabled, summaryMessage, view, store.ReadAppearance(), appearanceMessage),
                         "text/html; charset=utf-8");
                 }
                 catch (SqliteException)
@@ -207,6 +217,32 @@ namespace CtiCore
                     app.Logger.LogWarning("Could not save local CTI collection settings.");
                     return SeeOther(ctx, submitted.Source, submitted.Query, "storage");
                 }
+            });
+            app.MapPost("/settings/appearance", async (HttpContext ctx, IAntiforgery antiforgery, ArticleStore store) =>
+            {
+                var form = await ReadProtectedForm(ctx, antiforgery);
+                if (form is null || form["mode"].Count != 1 || form["mode"][0] is not ("save" or "reset")
+                    || !NewsQuery.TryRead(form["filter"], form["q"], form["page"], out var query))
+                    return Results.BadRequest();
+
+                string status = form["mode"][0] == "reset" ? "reset" : "saved";
+                var appearance = AppearanceSettings.Default;
+                if (status == "saved")
+                {
+                    if (!ReadCheckbox(form, "visible", out bool visible) || form["label"].Count != 1
+                        || !AppearanceSettings.TryNormalize(form["label"].ToString(), out string label))
+                        return Results.BadRequest();
+                    appearance = new(visible, label);
+                }
+                try { store.SaveAppearance(appearance); }
+                catch (SqliteException)
+                {
+                    app.Logger.LogWarning("Could not save local CTI appearance settings.");
+                    status = "storage";
+                }
+                KeyValuePair<string, string?>[] notice = [new("view", "settings"), new("appearance", status)];
+                ctx.Response.Headers.Location = "/" + QueryString.Create(notice.Concat(query.Parameters())) + "#settings-heading";
+                return Results.StatusCode(StatusCodes.Status303SeeOther);
             });
             app.MapPost("/summary", async (HttpContext ctx, IAntiforgery antiforgery, SummaryCoordinator summaries) =>
             {

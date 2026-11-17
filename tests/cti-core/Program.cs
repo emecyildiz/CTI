@@ -301,7 +301,7 @@ try
         var token = Token(page);
         clock.Advance(TimeSpan.FromHours(3));
         await Task.Delay(poll * 4);
-        Require(requested == 3 && page.Contains("Kaynak kapalı") && page.Contains("<button type=\"submit\" disabled>"),
+        Require(requested == 3 && page.Contains("Kaynak kapalı") && page.Contains("<button type=\"submit\" disabled class=\"action\">"),
             "Disabled state and articles survive restart without a new request.");
         Volatile.Write(ref scheduleMode, 0);
         Require(await Settings(browser, token, enabled: true, automatic: false) == Redirect("saved")
@@ -436,23 +436,35 @@ try
             && !page.Contains("Recent Microsoft") && !page.Contains("Repeated story") && !page.Contains("Invalid month")
             && !page.Contains("Other origin") && !page.Contains("Not a permalink"),
             "The selected source renders only its own valid articles and retains navigation state.");
-        Require(filterStore.Latest().Count == 100 && all.Contains("Recent Microsoft") && !all.Contains("Older Krebs investigation")
+        Require(filterStore.Latest().Count == 12 && all.Contains("Recent Microsoft") && !all.Contains("Older Krebs investigation")
             && filterStore.Latest(krebs).Single().Title == "Older Krebs investigation",
-            "SQLite filters before the 100-row limit, so newer articles from other sources cannot hide the selected source.");
+            "SQLite filters before the 12-row limit, so newer articles from other sources cannot hide the selected source.");
         Require(await Settings(browser, token, enabled: false, automatic: false, source: krebs.Id, filter: krebs.Id)
             == Redirect("saved", krebs.Id, krebs.Id) && (await browser.GetStringAsync(filterUrl)).Contains("Older Krebs investigation")
             && krebsRequests == 1, "Past records remain visible after a source is disabled.");
         var second = await browser.GetStringAsync("/?page=2");
+        var last = await browser.GetStringAsync("/?page=9");
         Require(all.Contains("/?page=2#articles-heading\" rel=\"next\"") && !all.Contains("Recent Microsoft 101")
-            && second.Contains("Recent Microsoft 101") && second.Contains("Older Krebs investigation")
-            && second.Contains("Sayfa 2") && second.Contains("rel=\"prev\"") && !second.Contains("rel=\"next\"")
-            && !second.Contains("Recent Microsoft 100"),
-            "The second page shows older records, with no duplicates at the boundary.");
+            && all.Contains("page=9#articles-heading\" aria-label=\"Sayfa 9\"")
+            && Regex.Matches(all, "<li id=\"news-").Count == 12
+            && Regex.Matches(second, "<li id=\"news-").Count == 12
+            && all.Contains("Recent Microsoft 012") && !all.Contains("Recent Microsoft 013")
+            && second.Contains("Recent Microsoft 013") && !second.Contains("Recent Microsoft 012")
+            && second.Contains("Sayfa 2 / 9") && second.Contains("aria-current=\"page\" aria-label=\"Sayfa 2\"")
+            && second.Contains("rel=\"prev\"") && second.Contains("rel=\"next\"")
+            && Regex.Matches(last, "<li id=\"news-").Count == 6 && last.Contains("Recent Microsoft 101")
+            && last.Contains("Older Krebs investigation") && !last.Contains("rel=\"next\""),
+            "Numbered pagination shows twelve records per full page, with a stable boundary and no next link at the end.");
+        var pastEnd = await browser.GetStringAsync("/?page=10");
+        Require(pastEnd.Contains("İlk sayfaya dön") && pastEnd.Contains("page=9#articles-heading\" rel=\"prev\"")
+            && !pastEnd.Contains("<li id=\"news-"), "Stale page URLs offer a way back to existing results.");
 
         var found = WebUtility.HtmlDecode(await browser.GetStringAsync("/?filter=" + ms.Id + "&q=rEcEnT%20MiCrOsOfT"));
-        var foundMore = await browser.GetStringAsync("/?filter=" + ms.Id + "&q=rEcEnT%20MiCrOsOfT&page=2");
+        var foundMore = await browser.GetStringAsync("/?filter=" + ms.Id + "&q=rEcEnT%20MiCrOsOfT&page=9");
         Require(found.Contains($"/?filter={ms.Id}&q=rEcEnT%20MiCrOsOfT&page=2#articles-heading\" rel=\"next\"")
+            && found.Contains($"/?filter={ms.Id}&q=rEcEnT%20MiCrOsOfT&page=9#articles-heading\" aria-label=\"Sayfa 9\"")
             && foundMore.Contains("Recent Microsoft 101") && !foundMore.Contains("Older Krebs investigation")
+            && Regex.Matches(foundMore, "<li id=\"news-").Count == 5
             && !foundMore.Contains("rel=\"next\""),
             "Search is case-insensitive, combines with a source filter, and carries both parameters across pages.");
         Require(filterStore.RecordCollection(ms, filterStore.ReadSource(ms).Revision, false, day,
@@ -467,7 +479,7 @@ try
         Require(noMatch.Contains("Aramana uyan haber bulunamadı.") && !noMatch.Contains("<script>")
             && noMatch.Contains("&lt;script&gt;"), "Search input is safely escaped and empty results are clear.");
         foreach (var url in new[] { "/?q=a&q=b", "/?q=%0Aexample", "/?q=" + new string('x', 121),
-                     "/?page=0", "/?page=1001", "/?page=2&page=3" })
+                     "/?page=0", $"/?page={NewsQuery.MaxPage + 1}", "/?page=2&page=3", "/?view=unknown", "/?view=sources&view=settings" })
         {
             using var response = await browser.GetAsync(url);
             Require(response.StatusCode == HttpStatusCode.BadRequest, "Invalid search or page arguments are rejected.");
@@ -475,8 +487,34 @@ try
         var savedWithSearch = await Submit(browser, token, source: krebs.Id, path: "/settings/source",
             fields: [new("filter", ms.Id), new("q", "recent Microsoft"), new("page", "2")]);
         Require(savedWithSearch == (303, $"/?source={krebs.Id}&status=saved&filter={ms.Id}&q=recent%20Microsoft&page=2#source-{krebs.Id}")
-            && (await browser.GetStringAsync(savedWithSearch.Redirect)).Contains("Recent Microsoft 101") && krebsRequests == 1,
+            && (await browser.GetStringAsync(savedWithSearch.Redirect)).Contains("Recent Microsoft 013") && krebsRequests == 1,
             "A source action preserves the search and page without starting a network request.");
+
+        string settings = await browser.GetStringAsync("/?view=settings&page=2");
+        var appearanceToken = Token(settings);
+        Require(all.Contains("class=\"sidebar\"") && all.Contains("id=\"settings-view\" hidden")
+            && settings.Contains("id=\"settings-view\">") && settings.Contains("id=\"news-view\" hidden")
+            && settings.Contains("dir=\"auto\">Emecworks</span>"),
+            "The sidebar opens a separate settings view with the default subtitle.");
+        KeyValuePair<string, string>[] appearanceFields = [new("mode", "save"), new("label", "Atölye <script>"), new("visible", "on"), new("page", "2")];
+        Require((await Submit(browser, appearanceToken, path: "/settings/appearance", omitOrigin: true, fields: appearanceFields)).Status == 400
+            && (await Submit(browser, "invalid", path: "/settings/appearance", fields: appearanceFields)).Status == 400
+            && (await Submit(browser, appearanceToken, path: "/settings/appearance",
+                fields: [new("mode", "save"), new("label", new string('x', 49))])).Status == 400,
+            "Appearance settings enforce origin, antiforgery, and bounds validation.");
+        var appearanceSaved = await Submit(browser, appearanceToken, path: "/settings/appearance", fields: appearanceFields);
+        Require(appearanceSaved == (303, "/?view=settings&appearance=saved&page=2#settings-heading")
+            && (await browser.GetStringAsync("/")).Contains("At&#xF6;lye &lt;script&gt;</span>")
+            && new ArticleStore(filterOptions.DataDirectory).ReadAppearance() == new AppearanceSettings(true, "Atölye <script>"),
+            "The custom subtitle persists in SQLite, is HTML-escaped, and keeps the news page.");
+        var appearanceHidden = await Submit(browser, appearanceToken, path: "/settings/appearance",
+            fields: [new("mode", "save"), new("label", "Atölye <script>")]);
+        Require(appearanceHidden.Status == 303 && !(await browser.GetStringAsync("/")).Contains("id=\"brand-caption\"")
+            && filterStore.ReadAppearance() == new AppearanceSettings(false, "Atölye <script>"),
+            "Hiding the subtitle retains the custom value.");
+        Require((await Submit(browser, appearanceToken, path: "/settings/appearance", fields: [new("mode", "reset")])).Status == 303
+            && filterStore.ReadAppearance() == AppearanceSettings.Default && krebsRequests == 1,
+            "Reset restores Emecworks and source/appearance settings do not run collection.");
         await app.StopAsync();
     }
     Console.WriteLine("PASS: source filter before list limit, catalog-only input, retained selection, disabled-source history, and Krebs permalinks.");

@@ -8,5 +8,6 @@
     <PackageReference Include="AngleSharp" Version="1.10.1" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.15" />
     <InternalsVisibleTo Include="CtiCore.Tests" />
+    <EmbeddedResource Include="Dashboard.css" LogicalName="CtiCore.Dashboard.css" />
   </ItemGroup>
 </Project>

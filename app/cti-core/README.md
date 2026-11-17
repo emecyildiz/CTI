@@ -63,11 +63,17 @@ persist across restarts. Run one CTI process per data directory.
 
 Under **Son haberler**, choose **Tümü** or a specific source and optionally
 enter text in **Haber başlığında ara**. Search ignores case and accents and
-matches text in locally saved titles only. Use **Önceki** and **Sonraki** to
-browse 100 results at a time. Searching and filtering do not contact
+matches text in locally saved titles only. Use the numbered page links or
+**Önceki** and **Sonraki** to browse up to 12 results at a time.
+Searching and filtering do not contact
 publishers or change which sources collect. Source actions retain the
 current filter, search and page; a new search or source filter starts at the
 first page. Disabled sources still show their previously saved news.
+
+Use **Kaynakları yönet** in the sidebar to change collection settings. In
+**Ayarlar → Menü alt yazısı**, keep the default **Emecworks**, enter your own
+label, or hide it without losing your chosen text. The preference is stored
+in the same local data directory and applies to this CTI instance.
 
 Data defaults to `Emecworks/CTI-Core` under the current user's local
 application data directory. Pass `--data-dir PATH` to use another directory.
@@ -86,7 +92,7 @@ canonical links, titles, sources, dates and optional short excerpts. The
 description HTML is parsed locally with no browser/resource loader; markup
 and external assets are not stored or rendered. Existing rows get an excerpt
 only if the same article reappears in a normal collection; old titles and
-dates are left unchanged. The panel displays at most 100 results per page.
+dates are left unchanged.
 
 ## Optional Turkish summary with Gemini
 

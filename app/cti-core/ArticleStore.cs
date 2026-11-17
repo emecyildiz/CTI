@@ -53,6 +53,11 @@ internal sealed class ArticleStore
                 last_succeeded INTEGER CHECK (last_succeeded IN (0, 1)),
                 last_added INTEGER
             );
+            CREATE TABLE IF NOT EXISTS appearance_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                show_label INTEGER NOT NULL CHECK (show_label IN (0, 1)),
+                label TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND {AppearanceSettings.MaxLabelLength})
+            );
             """;
         cmd.ExecuteNonQuery();
         cmd.CommandText = "SELECT 1 FROM pragma_table_info('articles') WHERE name = 'excerpt';";
@@ -191,7 +196,9 @@ internal sealed class ArticleStore
     public NewsPage ReadNews(NewsQuery query)
     {
         using var db = Open();
+        using var tx = db.BeginTransaction(deferred: true);
         using var cmd = db.CreateCommand();
+        cmd.Transaction = tx;
         const string select = """
             SELECT a.url, a.source, a.title, a.published_unix, a.excerpt, s.summary FROM articles a
             LEFT JOIN article_summaries s ON s.url = a.url
@@ -213,8 +220,14 @@ internal sealed class ArticleStore
             where.Add("cti_title_contains(a.title, $title) = 1");
             cmd.Parameters.AddWithValue("$title", query.Title);
         }
-        cmd.CommandText = select + (where.Count == 0 ? "" : " WHERE " + string.Join(" AND ", where)) + newest;
-        cmd.Parameters.AddWithValue("$take", NewsQuery.PageSize + 1);
+        string filter = where.Count == 0 ? "" : " WHERE " + string.Join(" AND ", where);
+        cmd.CommandText = "SELECT count(*) FROM articles a" + filter;
+        long count = (long)cmd.ExecuteScalar()!;
+        int pages = count == 0 ? 0 : (int)Math.Min((count - 1) / NewsQuery.PageSize + 1, NewsQuery.MaxPage);
+        if (query.Page > pages) return new([], pages);
+
+        cmd.CommandText = select + filter + newest;
+        cmd.Parameters.AddWithValue("$take", NewsQuery.PageSize);
         cmd.Parameters.AddWithValue("$skip", (query.Page - 1) * NewsQuery.PageSize);
         using var rows = cmd.ExecuteReader();
         var result = new List<Article>();
@@ -223,12 +236,35 @@ internal sealed class ArticleStore
                 rows.IsDBNull(3) ? null : DateTimeOffset.FromUnixTimeSeconds(rows.GetInt64(3)),
                 rows.IsDBNull(4) ? null : rows.GetString(4),
                 rows.IsDBNull(5) ? null : rows.GetString(5)));
-        bool extra = result.Count > NewsQuery.PageSize;
-        if (extra) result.RemoveAt(result.Count - 1);
-        return new(result, extra && query.Page < NewsQuery.MaxPage);
+        return new(result, pages);
     }
 
     public IReadOnlyList<Article> Latest(FeedSource? filter = null) => ReadNews(new(filter, "", 1)).Articles;
+
+    public AppearanceSettings ReadAppearance()
+    {
+        using var db = Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT show_label, label FROM appearance_settings WHERE id = 1;";
+        using var row = cmd.ExecuteReader();
+        if (!row.Read()) return AppearanceSettings.Default;
+        string raw = row.GetString(1);
+        return new(row.GetBoolean(0), AppearanceSettings.TryNormalize(raw, out string label)
+            ? label : AppearanceSettings.Default.Label);
+    }
+
+    public void SaveAppearance(AppearanceSettings settings)
+    {
+        using var db = Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO appearance_settings (id, show_label, label) VALUES (1, $visible, $label)
+            ON CONFLICT (id) DO UPDATE SET show_label = excluded.show_label, label = excluded.label;
+            """;
+        cmd.Parameters.AddWithValue("$visible", settings.Visible);
+        cmd.Parameters.AddWithValue("$label", settings.Label);
+        cmd.ExecuteNonQuery();
+    }
 
     public SummaryInput? ReadSummaryInput(string url)
     {
