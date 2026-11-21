@@ -6,6 +6,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw 'Run this build script in PowerShell 7 or newer (pwsh).'
+}
 if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
     throw 'Build and verification of this preview requires x64 Windows.'
 }
@@ -13,6 +16,10 @@ if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $project = Join-Path $root 'app\cti-core\CtiCore.csproj'
 $assets = Join-Path $root 'app\cti-core\packaging\windows'
+$sourceCommit = & git -C $root rev-parse --verify HEAD
+if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') { throw 'Could not identify the source commit.' }
+& git -C $root diff --quiet HEAD -- 'app/cti-core' 'scripts/build-cti-core-preview.ps1' 'LICENSE'
+if ($LASTEXITCODE -ne 0) { throw 'Commit the Core source and packaging changes before building a preview.' }
 $id = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $root "dist\cti-core-preview\$id"
@@ -20,7 +27,7 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 $destination = [IO.Path]::GetFullPath($OutputDirectory)
 $archiveName = 'CTI-Core-Windows-x64-preview.zip'
 $checksumName = "$archiveName.sha256"
-foreach ($name in @($archiveName, $checksumName)) {
+foreach ($name in @($archiveName, $checksumName, 'CTI-Core-preview.manifest.json')) {
     if (Test-Path -LiteralPath (Join-Path $destination $name)) {
         throw "Refusing to replace an existing artifact: $name"
     }
@@ -99,16 +106,22 @@ try {
     $page = $null
     while ([DateTime]::UtcNow -lt $deadline -and -not $process.HasExited) {
         try {
-            $page = Invoke-WebRequest -Uri "http://127.0.0.1:$port/" -UseBasicParsing -TimeoutSec 2
+            $page = Invoke-WebRequest -Uri "http://127.0.0.1:$port/" -UseBasicParsing -NoProxy -TimeoutSec 2
             break
         }
         catch { Start-Sleep -Milliseconds 250 }
     }
     if ($null -eq $page -or $process.HasExited -or $page.StatusCode -ne 200 -or
         $page.Content -notmatch 'id="source-heading"' -or $page.Content -notmatch 'id="label-securityweek"' -or
+        $page.Content -notmatch 'class="sidebar"' -or $page.Content -notmatch 'id="settings-view"' -or
         $page.Content -match 'action="/summary"' -or -not (Test-Path -LiteralPath (Join-Path $data 'articles.sqlite3'))) {
         if ($process.HasExited) { Write-Host ($stdout.GetAwaiter().GetResult()); Write-Host ($stderr.GetAwaiter().GetResult()) }
         throw 'The packaged executable did not start an isolated panel with SQLite and AI off.'
+    }
+    $settingsPage = Invoke-WebRequest -Uri "http://127.0.0.1:$port/?view=settings" -UseBasicParsing -NoProxy -TimeoutSec 5
+    if ($settingsPage.StatusCode -ne 200 -or $settingsPage.Content -notmatch 'id="settings-view">' -or
+        $settingsPage.Content -notmatch 'action="/settings/appearance"') {
+        throw 'The packaged appearance settings did not open.'
     }
 
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
@@ -116,6 +129,20 @@ try {
     [IO.File]::Copy($zip, $artifact, $false)
     $hash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText((Join-Path $destination $checksumName), "$hash  $archiveName`n", [Text.Encoding]::ASCII)
+    $manifest = [ordered]@{
+        name = 'Public CTI Core preview'
+        source_commit = $sourceCommit.Trim()
+        source_branch = 'public-core/rss-first'
+        sdk = $sdk.Trim()
+        runtime = $version
+        generated_at = [DateTime]::UtcNow.ToString('O')
+        archive = $archiveName
+        sha256 = $hash
+        page_size = 12
+        legacy_n8n_included = $false
+        files = $names
+    } | ConvertTo-Json -Depth 3
+    [IO.File]::WriteAllText((Join-Path $destination 'CTI-Core-preview.manifest.json'), "$manifest`n", [Text.UTF8Encoding]::new($false))
     Write-Host "PASS: $version; archive executable started the panel and initialized native SQLite with AI off."
     Write-Output $artifact
 }

@@ -12,7 +12,8 @@ dotnet run --project app/cti-core -- --port 8091
 
 ### Windows x64 preview ZIP
 
-On Windows, build an unsigned, self-contained ZIP with the .NET 10 SDK:
+On Windows, use PowerShell 7 or newer and the .NET 10 SDK to build an unsigned,
+self-contained ZIP:
 
 ```powershell
 .\scripts\build-cti-core-preview.ps1
@@ -28,7 +29,8 @@ loopback panel in the default browser after CTI starts. It requires no
 installer, separate .NET runtime, Docker, or administrator access. Use
 Ctrl+C in its console to stop. For a custom port, run
 `CTI-Core.exe --port 8092 --open-browser` instead. No server-side deployment,
-release signing or background Windows service is included.
+release signing or background Windows service is included. The sibling manifest
+records the source commit, SDK, embedded runtime, checksum and explicit file list.
 
 ### Using the panel
 
@@ -138,6 +140,8 @@ On the development branch, **Validate CTI Core preview** runs these
 fixture tests on Windows x64 and Ubuntu x64 when Core files change.
 The Windows job also unpacks and starts a freshly built preview ZIP and
 verifies its checksum. This workflow is independent of the original CTI
-installer workflows; it does not contact live RSS or Gemini, upload a
-binary, or create a GitHub Release. The interactive launcher and first-use
+installer workflows; it does not contact live RSS or Gemini or create a
+GitHub Release. A successful Windows job stores the tested ZIP, checksum and
+manifest as a 14-day Actions artifact; GitHub sign-in may be required to download
+it. The interactive launcher and first-use
 experience still need a person to test them.

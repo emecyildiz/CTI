@@ -3,7 +3,8 @@ EMECWORKS / Public CTI — Windows x64 önizlemesi
 1. ZIP arşivini bir klasöre çıkar.
 2. START-CTI.cmd dosyasına çift tıkla. Yerel panel tarayıcıda açılır.
    Açılmazsa tarayıcıya http://127.0.0.1:8091/ yaz.
-3. Microsoft Security Blog altında "Haberleri getir" ile başlayabilirsin.
+3. Yan menüden "Kaynakları yönet" bölümüne girip Microsoft Security Blog
+   satırındaki "Haberleri getir" ile başlayabilirsin.
 4. CTI'yi durdurmak için konsolda Ctrl+C kullan.
 
 Kurulum, yönetici izni, Docker, ayrı .NET kurulumu veya AI anahtarı gerekmez.
@@ -21,3 +22,11 @@ sonra bu dosyaları kaldırmak veritabanını silmez. Kişisel sunucuya bağlanm
 Gemini isteğe bağlıdır. Anahtar verilmedikçe AI kapalıdır. Varsayılan olarak
 yeni haber toplama ve özetleme için kendiliğinden dış istek gönderilmez;
 elle haber toplama veya kaynak bazında otomatik toplamayı açmak gerekir.
+
+Haberler sayfa başına en fazla 12 gösterilir. Alt kısımdaki sayfa
+numaralarıyla geçiş yapabilirsin; arama ve kaynak filtren korunur.
+Ayarlar bölümünde CTI'nin altındaki Emecworks yazısını değiştirebilir,
+gizleyebilir veya varsayılana dönebilirsin.
+
+Bu yeni RSS-first sürümdür. Eski n8n kurulumunu silmez veya dönüştürmez.
+Bu paketi başlatmak için eski setup.cmd ya da CTI-Setup kurucusunu kullanma.

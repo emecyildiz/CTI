@@ -72,4 +72,16 @@ jobs:
           $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
           $expected = ((Get-Content -LiteralPath "$zip.sha256") -split '\s+')[0]
           if ($actual -ne $expected) { throw 'Preview ZIP checksum does not match.' }
-          Write-Host 'PASS: verified preview ZIP and SHA-256; no upload or release.'
+          Write-Host 'PASS: verified preview ZIP and SHA-256; no release.'
+      - name: Store the tested Windows preview
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: CTI-Core-Windows-x64-preview-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/cti-core-preview/CTI-Core-Windows-x64-preview.zip
+            ${{ runner.temp }}/cti-core-preview/CTI-Core-Windows-x64-preview.zip.sha256
+            ${{ runner.temp }}/cti-core-preview/CTI-Core-preview.manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
